@@ -16,6 +16,7 @@ import { commit, decide, visible, type Call, type Decision } from '../policy/eng
 import { LimitState, type Clock } from '../policy/limits.js';
 import type { Policy } from '../policy/load.js';
 import {
+  CLIENT_CANCELLED,
   decisionEvent,
   errorLabel,
   internalErrorEvent,
@@ -46,22 +47,30 @@ function upstreamError(message: string): CallToolResult {
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * Asks the approver, but never waits longer than `timeoutMs`: an approver that ignores
- * the abort signal is left behind, and whatever it answers later is dropped.
+ * Asks the approver, but never waits longer than `timeoutMs` or past the client giving up:
+ * an approver that ignores the abort signal is left behind, and its late answer is dropped.
  */
 async function awaitApproval(
   approver: Approver,
   pending: PendingApproval,
   timeoutMs: number,
+  clientSignal: AbortSignal | undefined,
 ): Promise<ApprovalOutcome> {
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<ApprovalOutcome>((resolve) => {
+  let onClientAbort: (() => void) | undefined;
+  // Each stop is settled before aborting, so an approver that rejects on abort cannot win.
+  const stopped = new Promise<ApprovalOutcome>((resolve) => {
     timer = setTimeout(() => {
-      // Settled before aborting, so an approver that rejects on abort cannot win the race.
       resolve({ kind: 'timeout', timeoutMs });
       controller.abort(new Error('approval timed out'));
     }, timeoutMs);
+    onClientAbort = () => {
+      resolve({ kind: 'cancelled' });
+      controller.abort(new Error('the client gave up'));
+    };
+    if (clientSignal?.aborted) onClientAbort();
+    else clientSignal?.addEventListener('abort', onClientAbort, { once: true });
   });
   const answer = (async (): Promise<ApprovalOutcome> => {
     try {
@@ -72,9 +81,10 @@ async function awaitApproval(
     }
   })();
   try {
-    return await Promise.race([answer, timeout]);
+    return await Promise.race([answer, stopped]);
   } finally {
     clearTimeout(timer);
+    if (onClientAbort) clientSignal?.removeEventListener('abort', onClientAbort);
   }
 }
 
@@ -100,7 +110,9 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const audit = deps.audit;
   const newId = deps.newId ?? randomUUID;
   const approver = deps.approver ?? denyApprover;
-  const approvalTimeoutMs = deps.approvalTimeoutMs ?? 120_000;
+  // Under the MCP SDK client's default request timeout of 60 s, so that with default
+  // settings the agent hears the refusal instead of giving up first.
+  const approvalTimeoutMs = deps.approvalTimeoutMs ?? 55_000;
 
   const write = (event: AuditEvent): void => {
     if (!audit) return;
@@ -128,10 +140,18 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     callId: string,
     trace: Trace,
     decision: Decision,
+    signal: AbortSignal | undefined,
     approval?: ApprovalOutcome,
   ): Admission => {
+    const cancelled = signal?.aborted === true;
     // Checked before the effect, so a hidden tool can never be forwarded whatever it says.
-    const refused = decision.visible ? refusal(decision, approval) : decision;
+    // After an approval wait a gone client overrides every answer; otherwise a deny keeps
+    // its own code and only a call that would be forwarded is recorded as cancelled.
+    const refused = !decision.visible
+      ? decision
+      : cancelled && approval !== undefined
+        ? CLIENT_CANCELLED
+        : (refusal(decision, approval) ?? (cancelled ? CLIENT_CANCELLED : undefined));
     const event = decisionEvent(policy, call, callId, decision, refused, approval);
     if (refused) {
       record(() => event);
@@ -172,13 +192,16 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     callId: string,
     trace: Trace,
     decision: Decision,
+    signal: AbortSignal | undefined,
     outcome: ApprovalOutcome,
   ): Admission => {
     if (outcome.kind === 'error') console.error('mcp-policy-proxy: approver failed', outcome.error);
     const answered: Call = { ...call, at: clock() };
-    if (outcome.kind !== 'approved') return admit(answered, callId, trace, decision, outcome);
+    if (outcome.kind !== 'approved' || signal?.aborted) {
+      return admit(answered, callId, trace, decision, signal, outcome);
+    }
     // Decided again: other calls may have used up a limit while this one waited.
-    return admit(answered, callId, trace, decide(policy, state, answered), outcome);
+    return admit(answered, callId, trace, decide(policy, state, answered), signal, outcome);
   };
 
   // Best effort, after a throw: the log should still show that this call was refused.
@@ -254,7 +277,8 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       return shown;
     },
 
-    async callTool(caller, { server, tool, args }, forward) {
+    async callTool(caller, { server, tool, args }, forward, opts) {
+      const signal = opts?.signal;
       const trace: Trace = { decisionWritten: false, forwardedWritten: false };
       let admission: Admission;
       let startedAt = 0;
@@ -266,10 +290,10 @@ export function policyGate(deps: PolicyGateDeps): Gate {
         const decision = decide(policy, state, call);
         if (decision.effect === 'require_approval' && decision.visible) {
           const pending = pendingApproval(call, callId, decision);
-          const outcome = await awaitApproval(approver, pending, approvalTimeoutMs);
-          admission = admitAnswered(call, callId, trace, decision, outcome);
+          const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
+          admission = admitAnswered(call, callId, trace, decision, signal, outcome);
         } else {
-          admission = admit(call, callId, trace, decision);
+          admission = admit(call, callId, trace, decision, signal);
         }
         // Read after the audit write, so the duration is the upstream's alone.
         if (admission.kind === 'forward') startedAt = clock();

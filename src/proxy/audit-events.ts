@@ -13,6 +13,11 @@ export interface Refusal {
   reason: string;
 }
 
+export const CLIENT_CANCELLED: Refusal = {
+  code: 'client_cancelled',
+  reason: 'the client gave up before the call was cleared',
+};
+
 function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefined {
   switch (outcome?.kind) {
     case 'approved':
@@ -29,6 +34,8 @@ function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefi
       };
     case 'error':
       return { code: 'approval_error', reason: 'the approver failed' };
+    case 'cancelled':
+      return CLIENT_CANCELLED;
     case undefined:
       // Only a gate bug gets here; an unasked approval must not pass as given.
       return { code: 'internal_error', reason: 'policy evaluation failed' };

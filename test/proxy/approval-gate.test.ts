@@ -7,6 +7,7 @@ import {
   type ApprovalResult,
   type PendingApproval,
 } from '../../src/approval/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { memoryAuditSink, type AuditEvent, type DecisionEvent } from '../../src/audit/log.js';
 import type { Decision } from '../../src/policy/engine.js';
 import { loadPolicy, parsePolicy, type Policy } from '../../src/policy/load.js';
@@ -320,5 +321,102 @@ describe('approval gate', () => {
     // The approved call used the one slot, so the next is refused before anyone is asked.
     const after = await call(writer, 'mail__send', TEAM_MAIL);
     expect(textOf(after)).toMatch(/^Denied by policy \(limit_exceeded\): /);
+  });
+});
+
+describe('a client that gives up', () => {
+  const writer = { identity: 'writer', session: 's1' };
+  const send = { server: 'mail', tool: 'send', args: TEAM_MAIL };
+  const sent: CallToolResult = { content: [{ type: 'text', text: 'sent' }] };
+  const CANCELLED =
+    'Denied by policy (client_cancelled): the client gave up before the call was cleared';
+
+  it('is not forwarded once approved, and uses no limit', async () => {
+    let seen: AbortSignal | undefined;
+    const answers: Array<(result: ApprovalResult) => void> = [];
+    const approver: Approver = {
+      request: (_pending, signal) => {
+        seen ??= signal;
+        return new Promise((resolve) => answers.push(resolve));
+      },
+    };
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: APPROVE_ONE_SEND, audit: sink, approver });
+    const forward = vi.fn(async () => sent);
+    const client = new AbortController();
+
+    const pending = gate.callTool(writer, send, forward, { signal: client.signal });
+    await expect.poll(() => seen).toBeDefined();
+    client.abort();
+    expect(seen?.aborted).toBe(true);
+    answers[0]?.({ approved: true, approver: 'test' });
+
+    expect(textOf(await pending)).toBe(CANCELLED);
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({
+        effect: 'deny',
+        code: 'client_cancelled',
+        reason: 'the client gave up before the call was cleared',
+        forwarded: false,
+      }),
+    ]);
+
+    // per_session is 1: had the cancelled call been committed, this one would hit the limit.
+    const next = gate.callTool(writer, send, forward, { signal: new AbortController().signal });
+    await expect.poll(() => answers.length).toBe(2);
+    answers[1]?.({ approved: true });
+    expect(await next).toEqual(sent);
+    expect(forward).toHaveBeenCalledTimes(1);
+  });
+
+  it('records an answer that came after the client left', async () => {
+    const client = new AbortController();
+    const approver = fixedApprover(() => {
+      // The answer and the client leaving land together; leaving wins.
+      client.abort();
+      return { approved: true, approver: 'test' };
+    });
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: APPROVE_ONE_SEND, audit: sink, approver });
+    const forward = vi.fn(async () => sent);
+
+    expect(textOf(await gate.callTool(writer, send, forward, { signal: client.signal }))).toBe(
+      CANCELLED,
+    );
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([expect.objectContaining({ code: 'client_cancelled' })]);
+  });
+
+  it('an allowed call from a client that already left is not forwarded', async () => {
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: EXAMPLE, audit: sink });
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(writer, send, forward, { signal: AbortSignal.abort() });
+    expect(textOf(result)).toBe(CANCELLED);
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({
+        code: 'client_cancelled',
+        rule: 'mail-team-only',
+        forwarded: false,
+      }),
+    ]);
+  });
+
+  it('a client still waiting gets the normal flow', async () => {
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: EXAMPLE, audit: sink });
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(writer, send, forward, {
+      signal: new AbortController().signal,
+    });
+    expect(result).toEqual(sent);
+    expect(forward).toHaveBeenCalledTimes(1);
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({ code: 'allowed', forwarded: true }),
+    ]);
   });
 });

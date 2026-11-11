@@ -28,14 +28,17 @@ export function buildServer(opts: ProxyOptions, caller: Caller): Server {
     };
   });
 
-  server.setRequestHandler('tools/call', async (req) => {
+  server.setRequestHandler('tools/call', async (req, ctx) => {
     const { name } = req.params;
     const target = splitName(name);
     // Rejected before the gate so a policy never sees, or logs, a call that cannot be routed.
     if (!target || !upstreams.has(target.server)) throw toolNotFound(name);
     const args = isPlainObject(req.params.arguments) ? req.params.arguments : {};
-    return gate.callTool(caller, { ...target, args }, () =>
-      upstreams.callTool(target.server, target.tool, args),
+    return gate.callTool(
+      caller,
+      { ...target, args },
+      () => upstreams.callTool(target.server, target.tool, args),
+      { signal: ctx.mcpReq.signal },
     );
   });
 

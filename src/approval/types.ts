@@ -27,7 +27,8 @@ export type ApprovalOutcome =
   | { kind: 'approved'; result: ApprovalResult }
   | { kind: 'refused'; result: ApprovalResult }
   | { kind: 'timeout'; timeoutMs: number }
-  | { kind: 'error'; error: unknown };
+  | { kind: 'error'; error: unknown }
+  | { kind: 'cancelled' };
 
 export const denyApprover: Approver = {
   request: async () => ({ approved: false, note: 'no approver configured' }),

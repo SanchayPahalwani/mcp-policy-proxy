@@ -16,6 +16,8 @@ export interface Gate {
     caller: Caller,
     target: { server: string; tool: string; args: Record<string, unknown> },
     forward: () => Promise<CallToolResult>,
+    /** `signal` aborts when the client gives up on the request. */
+    opts?: { signal?: AbortSignal },
   ): Promise<CallToolResult>;
 }
 
