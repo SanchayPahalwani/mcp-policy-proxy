@@ -26,8 +26,10 @@ export interface OutcomeEvent {
   call_id: string;
   ok: boolean;
   is_error: boolean;
+  /** The error's class (and JSON-RPC code), never its message: upstream text can echo args. */
   error?: string;
   duration_ms: number;
+  policy_sha256: string;
 }
 
 export interface ListEvent {
@@ -36,23 +38,34 @@ export interface ListEvent {
   session: string;
   identity: string;
   tools: string[];
+  policy_sha256: string;
 }
 
 export type AuditEvent = DecisionEvent | OutcomeEvent | ListEvent;
 
 export interface AuditSink {
-  /** Synchronous; throws if the event cannot be stored. */
+  /**
+   * Synchronous; throws if the event cannot be stored. Returning a promise breaks the
+   * contract, because the gate would forward before knowing whether the write landed:
+   * the gate treats a returned thenable as a failed write.
+   */
   write(event: AuditEvent): void;
 }
 
 export function fileAuditSink(path: string): AuditSink & { close(): void } {
   mkdirSync(dirname(path), { recursive: true });
-  let fd: number | undefined = openSync(path, 'a');
+  // Owner-only: the log holds call arguments. The mode applies when the file is created.
+  let fd: number | undefined = openSync(path, 'a', 0o600);
   return {
     write(event) {
       if (fd === undefined) throw new Error(`audit log ${path} is closed`);
       // Synchronous, so the decision is with the OS before the gate goes on to forward.
-      writeSync(fd, `${JSON.stringify(event)}\n`);
+      const line = `${JSON.stringify(event)}\n`;
+      const written = writeSync(fd, line);
+      const expected = Buffer.byteLength(line);
+      if (written !== expected) {
+        throw new Error(`audit log ${path}: short write (${written} of ${expected} bytes)`);
+      }
     },
     close() {
       if (fd === undefined) return;

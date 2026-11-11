@@ -1,13 +1,19 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProtocolError, type Client, type Transport } from '@modelcontextprotocol/client';
-import { InMemoryTransport } from '@modelcontextprotocol/server';
+import {
+  InMemoryTransport,
+  ProtocolError as ServerProtocolError,
+  ProtocolErrorCode,
+  type CallToolResult,
+} from '@modelcontextprotocol/server';
 import {
   memoryAuditSink,
   type AuditEvent,
   type AuditSink,
   type DecisionEvent,
 } from '../../src/audit/log.js';
+import { LimitState } from '../../src/policy/limits.js';
 import { loadPolicy, parsePolicy, type Policy } from '../../src/policy/load.js';
 import { sha256Hex, staticTokenAuthenticator } from '../../src/proxy/auth.js';
 import { policyGate } from '../../src/proxy/policy-gate.js';
@@ -161,6 +167,7 @@ describe('audit', () => {
         ok: true,
         is_error: false,
         duration_ms: 4,
+        policy_sha256: EXAMPLE.sha256,
       },
     ]);
   });
@@ -239,6 +246,7 @@ rules:
       to: 'team@example.test',
       body: '[REDACTED]',
     });
+    expect(JSON.stringify(sink.events)).not.toContain('the real body');
     expect(calls.mail).toEqual([
       { tool: 'send', args: { to: 'team@example.test', body: 'the real body' } },
     ]);
@@ -317,8 +325,9 @@ rules:
       call_id: 'call-1',
       ok: false,
       is_error: false,
-      error: expect.stringContaining('boom'),
+      error: 'ProtocolError -32603',
       duration_ms: 0,
+      policy_sha256: EXAMPLE.sha256,
     });
 
     await drop('web');
@@ -357,6 +366,7 @@ rules:
           'mail__send',
           'web__fetch_page',
         ],
+        policy_sha256: EXAMPLE.sha256,
       },
     ]);
   });
@@ -373,5 +383,204 @@ rules:
 
     expect((await writer.listTools()).tools).toHaveLength(6);
     expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  it('measures the duration from the forward, not from the decision', async () => {
+    const healthy = memoryAuditSink();
+    let clock: { now: number } | undefined;
+    // The decision write takes 3 ms of the fake clock; the upstream takes 4.
+    const sink: AuditSink = {
+      write(event) {
+        if (event.type === 'decision' && clock) clock.now += 3;
+        healthy.write(event);
+      },
+    };
+    const harness = await start({
+      audit: sink,
+      handlers: {
+        docs__create_draft: () => {
+          if (clock) clock.now += 4;
+          return { content: [{ type: 'text', text: 'created' }] };
+        },
+      },
+    });
+    clock = harness.clock;
+    const writer = await connect(harness.proxy);
+
+    await call(writer, 'docs__create_draft', { title: 'Notes' });
+    expect(healthy.events.map((e) => [e.type, e.ts])).toEqual([
+      ['decision', ISO(1_000)],
+      ['outcome', ISO(1_007)],
+    ]);
+    expect(healthy.events.at(-1)).toEqual(expect.objectContaining({ duration_ms: 4 }));
+  });
+
+  it('keeps upstream error text, which can quote a redacted value, out of the log', async () => {
+    const sink = memoryAuditSink();
+    const { proxy } = await start({
+      policy: parsePolicy(ONE_SEND),
+      audit: sink,
+      handlers: {
+        mail__send: (args) => {
+          throw new ServerProtocolError(
+            ProtocolErrorCode.InternalError,
+            `cannot send "${String(args.body)}"`,
+          );
+        },
+      },
+    });
+    const writer = await connect(proxy);
+
+    const result = await call(writer, 'mail__send', { to: 'team@example.test', body: 'pa55word' });
+    expect(textOf(result)).toMatch(/^Upstream error: .*pa55word/);
+    expect(sink.events.at(-1)).toEqual(
+      expect.objectContaining({ type: 'outcome', ok: false, error: 'ProtocolError -32603' }),
+    );
+    expect(JSON.stringify(sink.events)).not.toContain('pa55word');
+  });
+
+  it('records an upstream tool error as a completed call', async () => {
+    const sink = memoryAuditSink();
+    const { proxy } = await start({
+      audit: sink,
+      handlers: {
+        docs__get_draft: () => ({ isError: true, content: [{ type: 'text', text: 'no draft' }] }),
+      },
+    });
+    const writer = await connect(proxy);
+
+    expect((await call(writer, 'docs__get_draft', { id: 7 })).isError).toBe(true);
+    expect(sink.events.at(-1)).toEqual(
+      expect.objectContaining({ type: 'outcome', ok: true, is_error: true }),
+    );
+  });
+
+  it('still answers when the outcome cannot be recorded', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sink: AuditSink = {
+      write(event) {
+        if (event.type === 'outcome') throw new Error('disk full');
+      },
+    };
+    const { proxy, calls } = await start({
+      audit: sink,
+      handlers: { docs__create_draft: () => ({ content: [{ type: 'text', text: 'created' }] }) },
+    });
+    const writer = await connect(proxy);
+
+    const result = await call(writer, 'docs__create_draft', { title: 'Notes' });
+    expect(textOf(result)).toBe('created');
+    expect(calls.docs).toHaveLength(1);
+    expect(logged).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a sink that returns a promise as a failed write', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Rejects later: had the gate not caught it, vitest would report an unhandled rejection.
+    const sink = { write: () => Promise.reject(new Error('async sink')) } as unknown as AuditSink;
+    const { proxy, calls } = await start({ policy: parsePolicy(ONE_SEND), audit: sink });
+    const writer = await connect(proxy);
+
+    const result = await call(writer, 'mail__send', TEAM_MAIL);
+    expect(textOf(result)).toBe(
+      'Denied by policy (audit_failed): the decision could not be recorded',
+    );
+    expect(calls.mail).toEqual([]);
+    expect(logged).toHaveBeenCalled();
+  });
+});
+
+describe('audit of calls refused by a throw', () => {
+  const caller = { identity: 'writer', session: 's1' };
+  const sent: CallToolResult = { content: [{ type: 'text', text: 'sent' }] };
+
+  it('logs a refusal when the arguments cannot even be logged', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sink = memoryAuditSink();
+    const gate = policyGate({
+      policy: EXAMPLE,
+      audit: sink,
+      clock: () => 1_000,
+      newId: () => 'c1',
+    });
+    const args: Record<string, unknown> = { to: 'team@example.test', body: 'x' };
+    args.self = args;
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(caller, { server: 'mail', tool: 'send', args }, forward);
+    expect(textOf(result)).toBe('Denied by policy (internal_error): policy evaluation failed');
+    expect(forward).not.toHaveBeenCalled();
+    expect(sink.events).toEqual([
+      {
+        type: 'decision',
+        ts: ISO(1_000),
+        call_id: 'c1',
+        session: 's1',
+        identity: 'writer',
+        server: 'mail',
+        tool: 'send',
+        args: null,
+        effect: 'deny',
+        code: 'internal_error',
+        reason: 'policy evaluation failed',
+        visible: false,
+        forwarded: false,
+        policy_sha256: EXAMPLE.sha256,
+      },
+    ]);
+  });
+
+  it('closes a forwarded decision with a failed outcome when commit throws', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sink = memoryAuditSink();
+    const state = new LimitState();
+    state.record = () => {
+      throw new Error('counter broken');
+    };
+    const gate = policyGate({
+      policy: EXAMPLE,
+      state,
+      audit: sink,
+      clock: () => 1_000,
+      newId: () => 'c1',
+    });
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(
+      caller,
+      { server: 'mail', tool: 'send', args: TEAM_MAIL },
+      forward,
+    );
+    expect(textOf(result)).toBe('Denied by policy (internal_error): policy evaluation failed');
+    expect(forward).not.toHaveBeenCalled();
+    expect(sink.events).toEqual([
+      expect.objectContaining({ type: 'decision', call_id: 'c1', forwarded: true }),
+      {
+        type: 'outcome',
+        ts: ISO(1_000),
+        call_id: 'c1',
+        ok: false,
+        is_error: false,
+        error: 'internal_error',
+        duration_ms: 0,
+        policy_sha256: EXAMPLE.sha256,
+      },
+    ]);
+  });
+
+  it('reports a failing sink instead of throwing it', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sink: AuditSink = {
+      write() {
+        throw new Error('disk full');
+      },
+    };
+    const gate = policyGate({ policy: EXAMPLE, audit: sink });
+    const args: Record<string, unknown> = {};
+    args.self = args;
+
+    const result = await gate.callTool(caller, { server: 'mail', tool: 'send', args }, vi.fn());
+    expect(textOf(result)).toBe('Denied by policy (internal_error): policy evaluation failed');
+    expect(logged).toHaveBeenCalledTimes(2);
   });
 });

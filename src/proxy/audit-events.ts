@@ -1,3 +1,4 @@
+import { ProtocolError } from '@modelcontextprotocol/server';
 import type { ApprovalOutcome, ApprovalResult } from '../approval/types.js';
 import type { DecisionEvent, ListEvent, OutcomeEvent } from '../audit/log.js';
 import { redact } from '../audit/redact.js';
@@ -100,6 +101,7 @@ export function decisionEvent(
 }
 
 export function outcomeEvent(
+  policy: Policy,
   callId: string,
   startedAt: number,
   now: number,
@@ -113,15 +115,53 @@ export function outcomeEvent(
     is_error: result.isError,
     ...(result.error !== undefined && { error: result.error }),
     duration_ms: now - startedAt,
+    policy_sha256: policy.sha256,
   };
 }
 
-export function listEvent(caller: Caller, now: number, names: string[]): ListEvent {
+/**
+ * What a failed forward is logged as. Never the message: an upstream can quote an argument
+ * back, and the log would then hold a value that redaction removed from `args`.
+ */
+export function errorLabel(e: unknown): string {
+  if (e instanceof ProtocolError) return `ProtocolError ${e.code}`;
+  if (e instanceof Error) return e.constructor.name;
+  return typeof e;
+}
+
+/** For a call refused because something threw; `args` are left out, as they may be the cause. */
+export function internalErrorEvent(
+  policy: Policy,
+  caller: Caller,
+  target: { server: string; tool: string },
+  callId: string,
+  now: number,
+): DecisionEvent {
+  return {
+    type: 'decision',
+    ts: iso(now),
+    call_id: callId,
+    session: caller.session,
+    identity: caller.identity,
+    server: target.server,
+    tool: target.tool,
+    args: null,
+    effect: 'deny',
+    code: 'internal_error',
+    reason: 'policy evaluation failed',
+    visible: false,
+    forwarded: false,
+    policy_sha256: policy.sha256,
+  };
+}
+
+export function listEvent(policy: Policy, caller: Caller, now: number, names: string[]): ListEvent {
   return {
     type: 'list',
     ts: iso(now),
     session: caller.session,
     identity: caller.identity,
     tools: [...names].sort(),
+    policy_sha256: policy.sha256,
   };
 }

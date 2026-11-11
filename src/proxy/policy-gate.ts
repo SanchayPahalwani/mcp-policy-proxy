@@ -15,8 +15,16 @@ import { redact } from '../audit/redact.js';
 import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
 import { LimitState, type Clock } from '../policy/limits.js';
 import type { Policy } from '../policy/load.js';
-import { decisionEvent, iso, listEvent, outcomeEvent, refusal } from './audit-events.js';
-import { deniedResult, toolNotFound, type Gate } from './gate.js';
+import {
+  decisionEvent,
+  errorLabel,
+  internalErrorEvent,
+  iso,
+  listEvent,
+  outcomeEvent,
+  refusal,
+} from './audit-events.js';
+import { deniedResult, toolNotFound, type Caller, type Gate } from './gate.js';
 import { joinName } from './names.js';
 import type { UpstreamTool } from './upstreams.js';
 
@@ -71,9 +79,19 @@ async function awaitApproval(
 }
 
 type Admission =
-  | { kind: 'forward'; call: Call; callId: string }
+  | { kind: 'forward'; callId: string }
   | { kind: 'refuse'; result: CallToolResult }
   | { kind: 'hidden' };
+
+/** How far one call got, so a refusal caused by a throw can still be logged truthfully. */
+interface Trace {
+  callId?: string;
+  decisionWritten: boolean;
+  forwardedWritten: boolean;
+}
+
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
+  typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
 
 export function policyGate(deps: PolicyGateDeps): Gate {
   const { policy } = deps;
@@ -84,11 +102,20 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const approver = deps.approver ?? denyApprover;
   const approvalTimeoutMs = deps.approvalTimeoutMs ?? 120_000;
 
+  const write = (event: AuditEvent): void => {
+    if (!audit) return;
+    const returned: unknown = audit.write(event);
+    if (isThenable(returned)) {
+      // The write may still fail later; nothing would be listening for it.
+      returned.then(undefined, () => {});
+      throw new Error('audit sink returned a promise: writes must be synchronous');
+    }
+  };
+
   // For events whose loss must not change the answer: the call was refused or already made.
   const record = (build: () => AuditEvent): void => {
-    if (!audit) return;
     try {
-      audit.write(build());
+      write(build());
     } catch (e) {
       console.error('mcp-policy-proxy: audit write failed', e);
     }
@@ -99,6 +126,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const admit = (
     call: Call,
     callId: string,
+    trace: Trace,
     decision: Decision,
     approval?: ApprovalOutcome,
   ): Admission => {
@@ -107,11 +135,12 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     const event = decisionEvent(policy, call, callId, decision, refused, approval);
     if (refused) {
       record(() => event);
+      trace.decisionWritten = true;
       if (!decision.visible) return { kind: 'hidden' };
       return { kind: 'refuse', result: deniedResult(refused.code, refused.reason) };
     }
     try {
-      audit?.write(event);
+      write(event);
     } catch (e) {
       console.error('mcp-policy-proxy: audit write failed, call refused', e);
       return {
@@ -119,8 +148,10 @@ export function policyGate(deps: PolicyGateDeps): Gate {
         result: deniedResult('audit_failed', 'the decision could not be recorded'),
       };
     }
+    trace.decisionWritten = true;
+    trace.forwardedWritten = true;
     commit(state, call, decision);
-    return { kind: 'forward', call, callId };
+    return { kind: 'forward', callId };
   };
 
   const pendingApproval = (call: Call, callId: string, decision: Decision): PendingApproval => ({
@@ -139,24 +170,53 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const admitAnswered = (
     call: Call,
     callId: string,
+    trace: Trace,
     decision: Decision,
     outcome: ApprovalOutcome,
   ): Admission => {
     if (outcome.kind === 'error') console.error('mcp-policy-proxy: approver failed', outcome.error);
     const answered: Call = { ...call, at: clock() };
-    if (outcome.kind !== 'approved') return admit(answered, callId, decision, outcome);
+    if (outcome.kind !== 'approved') return admit(answered, callId, trace, decision, outcome);
     // Decided again: other calls may have used up a limit while this one waited.
-    return admit(answered, callId, decide(policy, state, answered), outcome);
+    return admit(answered, callId, trace, decide(policy, state, answered), outcome);
+  };
+
+  // Best effort, after a throw: the log should still show that this call was refused.
+  const recordFailure = (
+    caller: Caller,
+    target: { server: string; tool: string },
+    trace: Trace,
+  ) => {
+    const now = () => {
+      try {
+        return clock();
+      } catch {
+        return Date.now();
+      }
+    };
+    const callId = trace.callId ?? randomUUID();
+    if (!trace.decisionWritten) {
+      record(() => internalErrorEvent(policy, caller, target, callId, now()));
+    } else if (trace.forwardedWritten) {
+      const at = now();
+      record(() =>
+        outcomeEvent(policy, callId, at, at, {
+          ok: false,
+          isError: false,
+          error: 'internal_error',
+        }),
+      );
+    }
   };
 
   const forwardAndRecord = async (
-    { call, callId }: { call: Call; callId: string },
+    callId: string,
+    startedAt: number,
     forward: () => Promise<CallToolResult>,
   ): Promise<CallToolResult> => {
-    // From the decision's clock reading: nothing is awaited between it and forward().
     const outcome = (ok: boolean, isError: boolean, error?: string) =>
       record(() =>
-        outcomeEvent(callId, call.at, clock(), {
+        outcomeEvent(policy, callId, startedAt, clock(), {
           ok,
           isError,
           ...(error !== undefined && { error }),
@@ -167,7 +227,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       outcome(true, result.isError === true);
       return result;
     } catch (e) {
-      outcome(false, false, messageOf(e));
+      outcome(false, false, errorLabel(e));
       // An unknown tool already speaks to the client; anything else becomes a readable result.
       if (e instanceof ProtocolError && e.code === ProtocolErrorCode.InvalidParams) throw e;
       return upstreamError(messageOf(e));
@@ -185,6 +245,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       }
       record(() =>
         listEvent(
+          policy,
           caller,
           clock(),
           shown.map((t) => joinName(t.server, t.tool.name)),
@@ -194,28 +255,34 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     },
 
     async callTool(caller, { server, tool, args }, forward) {
+      const trace: Trace = { decisionWritten: false, forwardedWritten: false };
       let admission: Admission;
+      let startedAt = 0;
       try {
         const callId = newId();
+        trace.callId = callId;
         const { identity, session } = caller;
         const call: Call = { identity, session, server, tool, args, at: clock() };
         const decision = decide(policy, state, call);
         if (decision.effect === 'require_approval' && decision.visible) {
           const pending = pendingApproval(call, callId, decision);
           const outcome = await awaitApproval(approver, pending, approvalTimeoutMs);
-          admission = admitAnswered(call, callId, decision, outcome);
+          admission = admitAnswered(call, callId, trace, decision, outcome);
         } else {
-          admission = admit(call, callId, decision);
+          admission = admit(call, callId, trace, decision);
         }
+        // Read after the audit write, so the duration is the upstream's alone.
+        if (admission.kind === 'forward') startedAt = clock();
       } catch (e) {
         // Fail closed: a bug in evaluation must never turn into an allow.
         console.error('mcp-policy-proxy: policy evaluation failed', e);
+        recordFailure(caller, { server, tool }, trace);
         return deniedResult('internal_error', 'policy evaluation failed');
       }
       // Hidden tools answer exactly like missing ones, so a caller cannot probe the policy.
       if (admission.kind === 'hidden') throw toolNotFound(joinName(server, tool));
       if (admission.kind === 'refuse') return admission.result;
-      return forwardAndRecord(admission, forward);
+      return forwardAndRecord(admission.callId, startedAt, forward);
     },
   };
 }
