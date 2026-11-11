@@ -1,7 +1,8 @@
+import { SERVER_NAME } from '../policy/schema.js';
+
 export const SEPARATOR = '__';
 
-// No underscores, so the first SEPARATOR in a joined name always ends the server part.
-export const SERVER_NAME = /^[a-z0-9][a-z0-9-]*$/;
+export { SERVER_NAME };
 
 export function joinName(server: string, tool: string): string {
   return `${server}${SEPARATOR}${tool}`;

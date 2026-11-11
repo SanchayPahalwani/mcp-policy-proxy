@@ -5,3 +5,7 @@ export * from './proxy/names.js';
 export * from './proxy/server.js';
 export * from './proxy/stdio.js';
 export * from './proxy/upstreams.js';
+export * from './policy/constraints.js';
+export * from './policy/load.js';
+export * from './policy/match.js';
+export * from './policy/schema.js';
