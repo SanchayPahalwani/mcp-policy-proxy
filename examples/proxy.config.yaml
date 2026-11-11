@@ -1,0 +1,30 @@
+# Example proxy config: serves the docs mock over stdio to agents on 127.0.0.1:8787.
+# Start it with: WRITER_TOKEN=... RELEASE_MANAGER_TOKEN=... npm run cli -- serve --config examples/proxy.config.yaml
+# Relative paths are read from this file's directory.
+
+# Where agents connect. transport: http | stdio. Agents name their session in session_header.
+listen:
+  { transport: http, host: 127.0.0.1, port: 8787, path: /mcp, session_header: x-agent-session }
+
+# Who may connect. Each token comes from an environment variable, or give its token_sha256.
+identities:
+  - { name: writer, token_env: WRITER_TOKEN }
+  - { name: release-manager, token_env: RELEASE_MANAGER_TOKEN }
+
+# Over stdio there is no token, so the identity is fixed here.
+# stdio_identity: writer            # required when listen.transport is stdio
+
+# The MCP servers behind the proxy. Their tools are listed to agents as <name>__<tool>.
+upstreams:
+  docs: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, docs] }
+  # web: { transport: http, url: http://127.0.0.1:9001/mcp, headers_env: { Authorization: WEB_UPSTREAM_AUTH } }
+
+# The rules every call is checked against.
+policy: ./policy.yaml
+
+# One JSON line per decision, outcome and listing.
+audit: { path: ./audit.jsonl }
+
+# Who answers require_approval rules: cli | webhook | deny. webhook takes { url, secret_env }.
+# 55 seconds, so the answer arrives before the agent's MCP client gives up at 60.
+approval: { type: cli, timeout_seconds: 55 }

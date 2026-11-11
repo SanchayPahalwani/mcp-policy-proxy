@@ -7,6 +7,7 @@ import {
 import { denyApprover, type Approver, type PendingApproval } from '../approval/types.js';
 import { awaitApproval, type ApprovalOutcome } from '../approval/wait.js';
 import type { AuditEvent, AuditSink } from '../audit/log.js';
+import { withSpan } from '../audit/otel.js';
 import { redact } from '../audit/redact.js';
 import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
 import { LimitState, type Clock } from '../policy/limits.js';
@@ -43,10 +44,20 @@ function upstreamError(message: string): CallToolResult {
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type Admission =
+/** `code` and `rule` are the call's final label, as its decision event records it. */
+type Admission = (
   | { kind: 'forward'; callId: string }
   | { kind: 'refuse'; result: CallToolResult }
-  | { kind: 'hidden' };
+  | { kind: 'hidden' }
+) & { code: string; rule?: string };
+
+/** What a call's span reports, filled in as the call goes and read when it settles. */
+interface CallEnding {
+  code: string;
+  rule?: string;
+  forwarded: boolean;
+  upstreamFailed: boolean;
+}
 
 const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
@@ -102,11 +113,12 @@ export function policyGate(deps: PolicyGateDeps): Gate {
         ? CLIENT_CANCELLED
         : (refusal(decision, approval) ?? (cancelled ? CLIENT_CANCELLED : undefined));
     const event = decisionEvent(policy, call, callId, decision, refused, approval);
+    const label = { code: event.code, ...(event.rule !== undefined && { rule: event.rule }) };
     if (refused) {
       record(() => event);
       progress.decisionWritten = true;
-      if (!decision.visible) return { kind: 'hidden' };
-      return { kind: 'refuse', result: deniedResult(refused.code, refused.reason) };
+      if (!decision.visible) return { kind: 'hidden', ...label };
+      return { kind: 'refuse', result: deniedResult(refused.code, refused.reason), ...label };
     }
     try {
       write(event);
@@ -115,12 +127,14 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       return {
         kind: 'refuse',
         result: deniedResult('audit_failed', 'the decision could not be recorded'),
+        ...label,
+        code: 'audit_failed',
       };
     }
     progress.decisionWritten = true;
     progress.forwardedWritten = true;
     commit(state, call, decision);
-    return { kind: 'forward', callId };
+    return { kind: 'forward', callId, ...label };
   };
 
   const pendingApproval = (call: Call, callId: string, decision: Decision): PendingApproval => ({
@@ -157,6 +171,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     callId: string,
     startedAt: number,
     forward: () => Promise<CallToolResult>,
+    ending: CallEnding,
   ): Promise<CallToolResult> => {
     const outcome = (ok: boolean, isError: boolean, error?: string) =>
       record(() =>
@@ -171,6 +186,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       outcome(true, result.isError === true);
       return result;
     } catch (e) {
+      ending.upstreamFailed = true;
       outcome(false, false, errorLabel(e));
       // An unknown tool already speaks to the client; anything else becomes a readable result.
       if (e instanceof ProtocolError && e.code === ProtocolErrorCode.InvalidParams) throw e;
@@ -178,57 +194,101 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     }
   };
 
-  return {
-    filterTools(caller, tools) {
-      let shown: UpstreamTool[];
-      try {
-        shown = tools.filter((t) => visible(policy, caller.identity, t.server, t.tool.name));
-      } catch (e) {
-        console.error('mcp-policy-proxy: policy evaluation failed while listing', e);
-        return [];
+  const listVisible = (caller: Caller, tools: UpstreamTool[]): UpstreamTool[] => {
+    let shown: UpstreamTool[];
+    try {
+      shown = tools.filter((t) => visible(policy, caller.identity, t.server, t.tool.name));
+    } catch (e) {
+      console.error('mcp-policy-proxy: policy evaluation failed while listing', e);
+      return [];
+    }
+    record(() =>
+      listEvent(
+        policy,
+        caller,
+        clock(),
+        shown.map((t) => joinName(t.server, t.tool.name)),
+      ),
+    );
+    return shown;
+  };
+
+  const gatedCall = async (
+    caller: Caller,
+    { server, tool, args }: { server: string; tool: string; args: Record<string, unknown> },
+    forward: () => Promise<CallToolResult>,
+    signal: AbortSignal | undefined,
+    ending: CallEnding,
+  ): Promise<CallToolResult> => {
+    const progress: CallProgress = { decisionWritten: false, forwardedWritten: false };
+    let admission: Admission;
+    let startedAt = 0;
+    try {
+      const callId = newId();
+      progress.callId = callId;
+      const { identity, session } = caller;
+      const call: Call = { identity, session, server, tool, args, at: clock() };
+      const decision = decide(policy, state, call);
+      if (decision.effect === 'require_approval' && decision.visible) {
+        const pending = pendingApproval(call, callId, decision);
+        const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
+        admission = admitAnswered(call, callId, progress, decision, signal, outcome);
+      } else {
+        admission = admit(call, callId, progress, decision, signal);
       }
-      record(() =>
-        listEvent(
-          policy,
-          caller,
-          clock(),
-          shown.map((t) => joinName(t.server, t.tool.name)),
-        ),
+      // Read after the audit write, so the duration is the upstream's alone.
+      if (admission.kind === 'forward') startedAt = clock();
+    } catch (e) {
+      // Fail closed: a bug in evaluation must never turn into an allow.
+      console.error('mcp-policy-proxy: policy evaluation failed', e);
+      // Best effort: the log should still show that this call was refused.
+      record(() => failureEvent(policy, caller, { server, tool }, progress, clock));
+      return deniedResult('internal_error', 'policy evaluation failed');
+    }
+    ending.code = admission.code;
+    if (admission.rule !== undefined) ending.rule = admission.rule;
+    // Hidden tools answer exactly like missing ones, so a caller cannot probe the policy.
+    if (admission.kind === 'hidden') throw toolNotFound(joinName(server, tool));
+    if (admission.kind === 'refuse') return admission.result;
+    ending.forwarded = true;
+    return forwardAndRecord(admission.callId, startedAt, forward, ending);
+  };
+
+  // Spans carry names and decision labels only: argument values and upstream text stay out.
+  return {
+    filterTools: (caller, tools) => {
+      let shown: UpstreamTool[] = [];
+      return withSpan(
+        'tools_list',
+        { identity: caller.identity, session: caller.session },
+        () => (shown = listVisible(caller, tools)),
+        () => ({
+          fields: { tools_listed: shown.length, tools_hidden: tools.length - shown.length },
+        }),
       );
-      return shown;
     },
 
-    async callTool(caller, { server, tool, args }, forward, opts) {
-      const signal = opts?.signal;
-      const progress: CallProgress = { decisionWritten: false, forwardedWritten: false };
-      let admission: Admission;
-      let startedAt = 0;
-      try {
-        const callId = newId();
-        progress.callId = callId;
-        const { identity, session } = caller;
-        const call: Call = { identity, session, server, tool, args, at: clock() };
-        const decision = decide(policy, state, call);
-        if (decision.effect === 'require_approval' && decision.visible) {
-          const pending = pendingApproval(call, callId, decision);
-          const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
-          admission = admitAnswered(call, callId, progress, decision, signal, outcome);
-        } else {
-          admission = admit(call, callId, progress, decision, signal);
-        }
-        // Read after the audit write, so the duration is the upstream's alone.
-        if (admission.kind === 'forward') startedAt = clock();
-      } catch (e) {
-        // Fail closed: a bug in evaluation must never turn into an allow.
-        console.error('mcp-policy-proxy: policy evaluation failed', e);
-        // Best effort: the log should still show that this call was refused.
-        record(() => failureEvent(policy, caller, { server, tool }, progress, clock));
-        return deniedResult('internal_error', 'policy evaluation failed');
-      }
-      // Hidden tools answer exactly like missing ones, so a caller cannot probe the policy.
-      if (admission.kind === 'hidden') throw toolNotFound(joinName(server, tool));
-      if (admission.kind === 'refuse') return admission.result;
-      return forwardAndRecord(admission.callId, startedAt, forward);
+    callTool: (caller, target, forward, opts) => {
+      const ending: CallEnding = {
+        code: 'internal_error',
+        forwarded: false,
+        upstreamFailed: false,
+      };
+      const { identity, session } = caller;
+      return withSpan(
+        'tool_call',
+        { identity, session, server: target.server, tool: target.tool },
+        () => gatedCall(caller, target, forward, opts?.signal, ending),
+        () => ({
+          fields: {
+            effect: ending.forwarded ? 'allow' : 'deny',
+            code: ending.code,
+            rule: ending.rule,
+            forwarded: ending.forwarded,
+          },
+          failed: ending.upstreamFailed,
+        }),
+      );
     },
   };
 }
