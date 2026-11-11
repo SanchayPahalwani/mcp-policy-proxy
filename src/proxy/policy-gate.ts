@@ -4,12 +4,19 @@ import {
   ProtocolErrorCode,
   type CallToolResult,
 } from '@modelcontextprotocol/server';
+import {
+  denyApprover,
+  type ApprovalOutcome,
+  type Approver,
+  type PendingApproval,
+} from '../approval/types.js';
 import type { AuditEvent, AuditSink } from '../audit/log.js';
-import { commit, decide, visible, type Call } from '../policy/engine.js';
+import { redact } from '../audit/redact.js';
+import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
 import { LimitState, type Clock } from '../policy/limits.js';
 import type { Policy } from '../policy/load.js';
-import { decisionEvent, listEvent, outcomeEvent, refusal } from './audit-events.js';
-import { deniedResult, toolNotFound, type Caller, type Gate } from './gate.js';
+import { decisionEvent, iso, listEvent, outcomeEvent, refusal } from './audit-events.js';
+import { deniedResult, toolNotFound, type Gate } from './gate.js';
 import { joinName } from './names.js';
 import type { UpstreamTool } from './upstreams.js';
 
@@ -19,6 +26,9 @@ export interface PolicyGateDeps {
   clock?: Clock;
   audit?: AuditSink;
   newId?: () => string;
+  /** Asked about every `require_approval` call; the default refuses them all. */
+  approver?: Approver;
+  approvalTimeoutMs?: number;
 }
 
 function upstreamError(message: string): CallToolResult {
@@ -26,6 +36,39 @@ function upstreamError(message: string): CallToolResult {
 }
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Asks the approver, but never waits longer than `timeoutMs`: an approver that ignores
+ * the abort signal is left behind, and whatever it answers later is dropped.
+ */
+async function awaitApproval(
+  approver: Approver,
+  pending: PendingApproval,
+  timeoutMs: number,
+): Promise<ApprovalOutcome> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<ApprovalOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      // Settled before aborting, so an approver that rejects on abort cannot win the race.
+      resolve({ kind: 'timeout', timeoutMs });
+      controller.abort(new Error('approval timed out'));
+    }, timeoutMs);
+  });
+  const answer = (async (): Promise<ApprovalOutcome> => {
+    try {
+      const result = await approver.request(pending, controller.signal);
+      return result.approved === true ? { kind: 'approved', result } : { kind: 'refused', result };
+    } catch (error) {
+      return { kind: 'error', error };
+    }
+  })();
+  try {
+    return await Promise.race([answer, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type Admission =
   | { kind: 'forward'; call: Call; callId: string }
@@ -38,6 +81,8 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const clock = deps.clock ?? Date.now;
   const audit = deps.audit;
   const newId = deps.newId ?? randomUUID;
+  const approver = deps.approver ?? denyApprover;
+  const approvalTimeoutMs = deps.approvalTimeoutMs ?? 120_000;
 
   // For events whose loss must not change the answer: the call was refused or already made.
   const record = (build: () => AuditEvent): void => {
@@ -51,13 +96,15 @@ export function policyGate(deps: PolicyGateDeps): Gate {
 
   // Synchronous on purpose: no await between decide and commit, otherwise two concurrent
   // calls could both see the same remaining slot and both be forwarded.
-  const admit = (caller: Caller, target: Pick<Call, 'server' | 'tool' | 'args'>): Admission => {
-    const { identity, session } = caller;
-    const call: Call = { identity, session, ...target, at: clock() };
-    const decision = decide(policy, state, call);
+  const admit = (
+    call: Call,
+    callId: string,
+    decision: Decision,
+    approval?: ApprovalOutcome,
+  ): Admission => {
     // Checked before the effect, so a hidden tool can never be forwarded whatever it says.
-    const refused = decision.visible ? refusal(decision) : decision;
-    const event = decisionEvent(policy, call, newId(), decision, refused);
+    const refused = decision.visible ? refusal(decision, approval) : decision;
+    const event = decisionEvent(policy, call, callId, decision, refused, approval);
     if (refused) {
       record(() => event);
       if (!decision.visible) return { kind: 'hidden' };
@@ -73,7 +120,33 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       };
     }
     commit(state, call, decision);
-    return { kind: 'forward', call, callId: event.call_id };
+    return { kind: 'forward', call, callId };
+  };
+
+  const pendingApproval = (call: Call, callId: string, decision: Decision): PendingApproval => ({
+    call_id: callId,
+    identity: call.identity,
+    session: call.session,
+    server: call.server,
+    tool: call.tool,
+    args: redact(call.args, policy.redactKeys),
+    rule: decision.rule ?? '',
+    reason: decision.reason,
+    requested_at: iso(call.at),
+  });
+
+  // Synchronous, like admit: limits are checked again and committed in the same tick.
+  const admitAnswered = (
+    call: Call,
+    callId: string,
+    decision: Decision,
+    outcome: ApprovalOutcome,
+  ): Admission => {
+    if (outcome.kind === 'error') console.error('mcp-policy-proxy: approver failed', outcome.error);
+    const answered: Call = { ...call, at: clock() };
+    if (outcome.kind !== 'approved') return admit(answered, callId, decision, outcome);
+    // Decided again: other calls may have used up a limit while this one waited.
+    return admit(answered, callId, decide(policy, state, answered), outcome);
   };
 
   const forwardAndRecord = async (
@@ -123,7 +196,17 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     async callTool(caller, { server, tool, args }, forward) {
       let admission: Admission;
       try {
-        admission = admit(caller, { server, tool, args });
+        const callId = newId();
+        const { identity, session } = caller;
+        const call: Call = { identity, session, server, tool, args, at: clock() };
+        const decision = decide(policy, state, call);
+        if (decision.effect === 'require_approval' && decision.visible) {
+          const pending = pendingApproval(call, callId, decision);
+          const outcome = await awaitApproval(approver, pending, approvalTimeoutMs);
+          admission = admitAnswered(call, callId, decision, outcome);
+        } else {
+          admission = admit(call, callId, decision);
+        }
       } catch (e) {
         // Fail closed: a bug in evaluation must never turn into an allow.
         console.error('mcp-policy-proxy: policy evaluation failed', e);

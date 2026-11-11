@@ -200,7 +200,7 @@ describe('audit', () => {
     expect(calls.docs).toEqual([]);
   });
 
-  it('logs an approval-required call as a denial while no approver exists', async () => {
+  it('logs an approval-required call as a denial when no approver is configured', async () => {
     const sink = memoryAuditSink();
     const policy = parsePolicy(`
 version: 1
@@ -219,9 +219,10 @@ rules:
       expect.objectContaining({
         type: 'decision',
         effect: 'deny',
-        code: 'approval_unavailable',
+        code: 'approval_denied',
         rule: 'approve-send',
         visible: true,
+        approval: { approved: false, note: 'no approver configured' },
         forwarded: false,
       }),
     ]);

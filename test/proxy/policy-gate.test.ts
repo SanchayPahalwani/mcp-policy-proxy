@@ -232,7 +232,7 @@ rules:
     const result = await call(release, 'docs__publish', { id: 7 });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toBe(
-      'Denied by policy (approval_unavailable): this call needs approval and no approver is configured',
+      'Denied by policy (approval_denied): approval was refused: no approver configured',
     );
     expect(calls.docs).toEqual([]);
   });
