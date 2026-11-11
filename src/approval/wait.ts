@@ -33,6 +33,8 @@ export async function awaitApproval(
   timeoutMs: number,
   clientSignal: AbortSignal | undefined,
 ): Promise<ApprovalOutcome> {
+  // A client that already left gets no prompt: someone would be asked about nothing.
+  if (clientSignal?.aborted) return { kind: 'cancelled' };
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   let onClientAbort: (() => void) | undefined;

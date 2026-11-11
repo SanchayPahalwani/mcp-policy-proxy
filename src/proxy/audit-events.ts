@@ -134,13 +134,20 @@ export function outcomeEvent(
 }
 
 /**
- * What a failed forward is logged as. Never the message: an upstream can quote an argument
- * back, and the log would then hold a value that redaction removed from `args`.
+ * What a failed forward is logged as. Never the message, the class or a free-form code:
+ * the upstream chooses all three and could make one carry a value redaction removed.
+ * The JSON-RPC reserved range is small and fixed, so a code from it reveals nothing.
  */
 export function errorLabel(e: unknown): string {
-  if (e instanceof ProtocolError) return `ProtocolError ${e.code}`;
-  if (e instanceof Error) return e.constructor.name;
-  return typeof e;
+  if (
+    e instanceof ProtocolError &&
+    Number.isInteger(e.code) &&
+    e.code >= -32768 &&
+    e.code <= -32000
+  ) {
+    return `protocol_error ${e.code}`;
+  }
+  return 'error';
 }
 
 /** For a call refused because something threw; `args` are left out, as they may be the cause. */

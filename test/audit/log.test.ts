@@ -4,21 +4,28 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fileAuditSink, memoryAuditSink, type AuditEvent } from '../../src/audit/log.js';
 
-// Lets one test make the OS accept fewer bytes than asked; every other call is the real one.
-const fs = vi.hoisted(() => ({ shortWrites: false }));
+// Lets a test make the OS accept fewer bytes than asked, or none; otherwise the real call.
+const fs = vi.hoisted(() => ({ mode: 'real' as 'real' | 'short' | 'zero' }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
-    writeSync: (...args: Parameters<typeof actual.writeSync>) =>
-      fs.shortWrites ? 1 : actual.writeSync(...args),
+    writeSync: (fd: number, buffer: Buffer, offset: number, length: number) => {
+      if (fs.mode === 'zero') return 0;
+      return actual.writeSync(
+        fd,
+        buffer,
+        offset,
+        fs.mode === 'short' ? Math.min(length, 5) : length,
+      );
+    },
   };
 });
 
 const dirs: string[] = [];
 
 afterEach(() => {
-  fs.shortWrites = false;
+  fs.mode = 'real';
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -76,10 +83,20 @@ describe('fileAuditSink', () => {
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
-  it('throws on a short write', () => {
+  it('finishes a line the OS accepted only part of', () => {
+    const path = join(tempDir(), 'audit.jsonl');
+    const sink = fileAuditSink(path);
+    fs.mode = 'short';
+    sink.write(outcome);
+    sink.write(listEvent(1));
+    sink.close();
+    expect(lines(path)).toEqual([outcome, listEvent(1)]);
+  });
+
+  it('throws when a write makes no progress', () => {
     const sink = fileAuditSink(join(tempDir(), 'audit.jsonl'));
-    fs.shortWrites = true;
-    expect(() => sink.write(outcome)).toThrow(/short write/);
+    fs.mode = 'zero';
+    expect(() => sink.write(outcome)).toThrow(/no progress/);
     sink.close();
   });
 

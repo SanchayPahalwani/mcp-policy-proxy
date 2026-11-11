@@ -28,7 +28,10 @@ export interface OutcomeEvent {
   call_id: string;
   ok: boolean;
   is_error: boolean;
-  /** The error's class (and JSON-RPC code), never its message: upstream text can echo args. */
+  /**
+   * `protocol_error <code>` for a JSON-RPC reserved code, else `error`. Never the message,
+   * class or any other code: an upstream picks those and can make them echo an argument.
+   */
   error?: string;
   duration_ms: number;
   policy_sha256: string;
@@ -62,11 +65,12 @@ export function fileAuditSink(path: string): AuditSink & { close(): void } {
     write(event) {
       if (fd === undefined) throw new Error(`audit log ${path} is closed`);
       // Synchronous, so the decision is with the OS before the gate goes on to forward.
-      const line = `${JSON.stringify(event)}\n`;
-      const written = writeSync(fd, line);
-      const expected = Buffer.byteLength(line);
-      if (written !== expected) {
-        throw new Error(`audit log ${path}: short write (${written} of ${expected} bytes)`);
+      const line = Buffer.from(`${JSON.stringify(event)}\n`);
+      // A short write is legal; keep going so no line is left without its newline.
+      for (let offset = 0; offset < line.length;) {
+        const written = writeSync(fd, line, offset, line.length - offset);
+        if (written <= 0) throw new Error(`audit log ${path}: write made no progress`);
+        offset += written;
       }
     },
     close() {

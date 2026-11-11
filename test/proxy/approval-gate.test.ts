@@ -457,10 +457,10 @@ describe('a client that gives up', () => {
     expect(forward).toHaveBeenCalledTimes(1);
   });
 
-  it('records an answer that came after the client left', async () => {
+  it('a client leaving while the approver answers wins over the answer', async () => {
     const client = new AbortController();
     const approver = fixedApprover(() => {
-      // The answer and the client leaving land together; leaving wins.
+      // The client leaves inside the approver's call: the wait sees it before the answer.
       client.abort();
       return { approved: true, approver: 'test' };
     });
@@ -473,6 +473,60 @@ describe('a client that gives up', () => {
     );
     expect(forward).not.toHaveBeenCalled();
     expect(decisions(sink.events)).toEqual([expect.objectContaining({ code: 'client_cancelled' })]);
+  });
+
+  it('records the answer when the client leaves after it, and uses no limit', async () => {
+    const client = new AbortController();
+    const approver = fixedApprover(() => ({ approved: true, approver: 'test' }));
+    let reads = 0;
+    // The second reading is the gate's, right after the wait: the answer has already won,
+    // and the client leaves before the gate goes on.
+    const clock = () => {
+      if (++reads === 2) client.abort();
+      return 1_000;
+    };
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: APPROVE_ONE_SEND, audit: sink, approver, clock });
+    const forward = vi.fn(async () => sent);
+
+    expect(textOf(await gate.callTool(writer, send, forward, { signal: client.signal }))).toBe(
+      CANCELLED,
+    );
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({
+        code: 'client_cancelled',
+        approval_requested_at: ISO(1_000),
+        approval: { approved: true, approver: 'test' },
+        forwarded: false,
+      }),
+    ]);
+
+    const next = await gate.callTool(writer, send, forward, {
+      signal: new AbortController().signal,
+    });
+    expect(next).toEqual(sent);
+    expect(forward).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask about a call whose client already left', async () => {
+    const asked: PendingApproval[] = [];
+    const approver = fixedApprover((pending) => {
+      asked.push(pending);
+      return { approved: true };
+    });
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: APPROVE_ONE_SEND, audit: sink, approver });
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(writer, send, forward, { signal: AbortSignal.abort() });
+    expect(textOf(result)).toBe(CANCELLED);
+    expect(asked).toEqual([]);
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({ code: 'client_cancelled', forwarded: false }),
+    ]);
+    expect(decisions(sink.events)[0]).not.toHaveProperty('approval_requested_at');
   });
 
   it('an allowed call from a client that already left is not forwarded', async () => {

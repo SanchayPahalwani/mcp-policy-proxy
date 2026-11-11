@@ -239,7 +239,12 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       const { identity, session } = caller;
       const call: Call = { identity, session, server, tool, args, at: clock() };
       const decision = decide(policy, state, call);
-      if (decision.effect === 'require_approval' && decision.visible) {
+      if (decision.effect === 'require_approval' && decision.visible && signal?.aborted) {
+        // Never asked, so no approval_requested_at.
+        admission = admit(call, callId, progress, decision, signal, {
+          outcome: { kind: 'cancelled' },
+        });
+      } else if (decision.effect === 'require_approval' && decision.visible) {
         const pending = pendingApproval(call, callId, decision);
         const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
         admission = admitAnswered(call, callId, progress, decision, signal, {

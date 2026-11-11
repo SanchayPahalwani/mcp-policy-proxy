@@ -325,7 +325,7 @@ rules:
       call_id: 'call-1',
       ok: false,
       is_error: false,
-      error: 'ProtocolError -32603',
+      error: 'protocol_error -32603',
       duration_ms: 0,
       policy_sha256: EXAMPLE.sha256,
     });
@@ -434,9 +434,30 @@ rules:
     const result = await call(writer, 'mail__send', { to: 'team@example.test', body: 'pa55word' });
     expect(textOf(result)).toMatch(/^Upstream error: .*pa55word/);
     expect(sink.events.at(-1)).toEqual(
-      expect.objectContaining({ type: 'outcome', ok: false, error: 'ProtocolError -32603' }),
+      expect.objectContaining({ type: 'outcome', ok: false, error: 'protocol_error -32603' }),
     );
     expect(JSON.stringify(sink.events)).not.toContain('pa55word');
+  });
+
+  it('keeps an upstream-chosen error code, which can be a redacted value, out of the log', async () => {
+    const sink = memoryAuditSink();
+    const { proxy } = await start({
+      policy: parsePolicy(ONE_SEND),
+      audit: sink,
+      handlers: {
+        mail__send: (args) => {
+          throw new ServerProtocolError(Number(args.body), 'refused');
+        },
+      },
+    });
+    const writer = await connect(proxy);
+
+    const result = await call(writer, 'mail__send', { to: 'team@example.test', body: 987654321 });
+    expect(result.isError).toBe(true);
+    expect(sink.events.at(-1)).toEqual(
+      expect.objectContaining({ type: 'outcome', ok: false, error: 'error' }),
+    );
+    expect(JSON.stringify(sink.events)).not.toContain('987654321');
   });
 
   it('records an upstream tool error as a completed call', async () => {
