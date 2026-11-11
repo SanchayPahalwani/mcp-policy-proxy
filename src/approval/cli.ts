@@ -41,17 +41,33 @@ export function cliApprover(
     output?: NodeJS.WritableStream;
     /** Makes the per-request code; injectable so tests can type it. */
     newCode?: () => string;
+    /** Lines arriving this soon after a prompt are dropped; default 250 ms. */
+    graceMs?: number;
+    /** Milliseconds from any fixed origin; injectable so tests do not sleep. */
+    now?: () => number;
   } = {},
 ): Approver {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stderr;
   const newCode = opts.newCode ?? randomCode;
+  // A stray Enter typed earlier reaches us microseconds after the prompt, before anyone read it.
+  const graceMs = opts.graceMs ?? 250;
+  const now = opts.now ?? (() => performance.now());
   let lines: Interface | undefined;
   let inputEnded = false;
   // Set only while a prompt is shown: a line typed at any other time is discarded.
   let answer: ((line: string | undefined) => void) | undefined;
   // One prompt at a time: each request starts when the one before it has settled.
   let queue: Promise<unknown> = Promise.resolve();
+  const closed = new AbortController();
+
+  const say = (text: string) => {
+    try {
+      output.write(text);
+    } catch {
+      // The answer is already given; a broken terminal changes nothing.
+    }
+  };
 
   // Read continuously once started, never paused, so nothing typed while idle is kept
   // around to answer a later prompt.
@@ -68,34 +84,36 @@ export function cliApprover(
   };
 
   const ask = async (pending: PendingApproval, signal: AbortSignal): Promise<ApprovalResult> => {
-    if (signal.aborted) return { approved: false };
+    const gone = () => signal.aborted || closed.signal.aborted;
+    if (gone()) return { approved: false };
     await startReading();
-    if (signal.aborted) return { approved: false };
+    if (gone()) return { approved: false };
     if (inputEnded) return { approved: false, note: 'terminal input closed' };
     return new Promise<ApprovalResult>((resolve) => {
       const finish = (result: ApprovalResult) => {
         answer = undefined;
         signal.removeEventListener('abort', onAbort);
+        closed.signal.removeEventListener('abort', onAbort);
         resolve(result);
       };
       const onAbort = () => {
         finish({ approved: false });
-        try {
-          output.write('\n(no longer waiting)\n');
-        } catch {
-          // The answer is already given; a broken terminal changes nothing.
-        }
+        say('\ncancelled\n');
       };
       try {
         const code = newCode();
+        let promptedAt = Number.POSITIVE_INFINITY;
         signal.addEventListener('abort', onAbort, { once: true });
-        answer = (line) =>
-          finish(
-            line === undefined
-              ? { approved: false, note: 'terminal input closed' }
-              : { approved: line.trim() === code, approver: 'cli' },
-          );
+        closed.signal.addEventListener('abort', onAbort, { once: true });
+        answer = (line) => {
+          if (line === undefined) return finish({ approved: false, note: 'terminal input closed' });
+          if (now() - promptedAt < graceMs) return;
+          const approved = line.trim() === code;
+          finish({ approved, approver: 'cli' });
+          say(approved ? 'approved\n' : 'refused\n');
+        };
         output.write(prompt(pending, code));
+        promptedAt = now();
       } catch {
         finish({ approved: false });
       }
@@ -104,19 +122,29 @@ export function cliApprover(
 
   return {
     request(pending, signal) {
+      if (signal.aborted || closed.signal.aborted) return Promise.resolve({ approved: false });
       // A failure in one request must not stop the queue for the next.
       const turn = queue.then(() => ask(pending, signal)).catch(() => ({ approved: false }));
       queue = turn;
-      if (signal.aborted) return Promise.resolve({ approved: false });
       // A request aborted while queued is answered now; its turn is skipped when it comes.
       return new Promise((resolve) => {
         const onAbort = () => resolve({ approved: false });
         signal.addEventListener('abort', onAbort, { once: true });
+        closed.signal.addEventListener('abort', onAbort, { once: true });
         void turn.then((result) => {
           signal.removeEventListener('abort', onAbort);
+          closed.signal.removeEventListener('abort', onAbort);
           resolve(result);
         });
       });
+    },
+
+    close() {
+      if (closed.signal.aborted) return;
+      closed.abort();
+      // Removes our listeners and pauses the input, so it no longer holds the process open.
+      // The stream itself is not ours to destroy.
+      lines?.close();
     },
   };
 }

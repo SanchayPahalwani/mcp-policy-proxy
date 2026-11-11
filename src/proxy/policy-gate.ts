@@ -246,10 +246,8 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       } else if (decision.effect === 'require_approval' && decision.visible) {
         const pending = pendingApproval(call, callId, decision);
         const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
-        admission = admitAnswered(call, callId, progress, decision, signal, {
-          outcome,
-          requestedAt: pending.requested_at,
-        });
+        progress.approval = { outcome, requestedAt: pending.requested_at };
+        admission = admitAnswered(call, callId, progress, decision, signal, progress.approval);
       } else {
         admission = admit(call, callId, progress, decision, signal);
       }

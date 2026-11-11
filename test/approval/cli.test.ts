@@ -18,7 +18,7 @@ const pending = (overrides: Partial<PendingApproval> = {}): PendingApproval => (
 
 const PROMPT_END = 'to approve, anything else to refuse: ';
 
-/** Codes `c001`, `c002`, … in request order, so a test can type the right one. */
+/** Codes `c001`, `c002`, … in request order, so a test can type the right one; no grace period. */
 function terminal() {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -29,7 +29,12 @@ function terminal() {
   return {
     input,
     output,
-    approver: cliApprover({ input, output, newCode: () => `c${String(++codes).padStart(3, '0')}` }),
+    approver: cliApprover({
+      input,
+      output,
+      newCode: () => `c${String(++codes).padStart(3, '0')}`,
+      graceMs: 0,
+    }),
     text: () => text,
     prompts: () => text.split('Approval needed:').length - 1,
   };
@@ -55,6 +60,53 @@ describe('cli approver', () => {
     expect(await result).toEqual({ approved: false, approver: 'cli' });
   });
 
+  it('says what became of each request', async () => {
+    const t = terminal();
+    const controller = new AbortController();
+    const first = t.approver.request(pending(), signal());
+    const second = t.approver.request(pending(), signal());
+    const third = t.approver.request(pending(), controller.signal);
+
+    await expect.poll(t.prompts).toBe(1);
+    t.input.write('c001\n');
+    await first;
+    await expect.poll(t.prompts).toBe(2);
+    t.input.write('no\n');
+    await second;
+    await expect.poll(t.prompts).toBe(3);
+    controller.abort();
+    await third;
+
+    const after = t.text().split(PROMPT_END).slice(1);
+    expect(after).toEqual([
+      expect.stringMatching(/^approved\n/),
+      expect.stringMatching(/^refused\n/),
+      '\ncancelled\n',
+    ]);
+  });
+
+  it('ignores a line that arrives within the grace period after the prompt', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const time = { now: 1_000 };
+    let text = '';
+    output.setEncoding('utf8');
+    output.on('data', (chunk: string) => (text += chunk));
+    const approver = cliApprover({ input, output, newCode: () => 'abcd', now: () => time.now });
+
+    const result = approver.request(pending(), signal());
+    await expect.poll(() => text).toContain(PROMPT_END);
+    time.now += 10;
+    input.write('abcd\n');
+    await tick();
+    expect(await Promise.race([result, tick().then(() => 'pending')])).toBe('pending');
+    expect(text.endsWith(PROMPT_END)).toBe(true);
+
+    time.now += 290;
+    input.write('abcd\n');
+    expect(await result).toEqual({ approved: true, approver: 'cli' });
+  });
+
   it('makes codes of four unambiguous characters', () => {
     for (let i = 0; i < 200; i++) expect(randomCode()).toMatch(/^[a-km-np-z2-9]{4}$/);
   });
@@ -71,7 +123,7 @@ describe('cli approver', () => {
     expect(text).toContain('"id": 7');
     expect(text).toContain('"token": "[REDACTED]"');
     expect(text).toContain('Rule: release-publish');
-    expect(text.endsWith(PROMPT_END)).toBe(true);
+    expect(text.endsWith(`${PROMPT_END}refused\n`)).toBe(true);
   });
 
   it('escapes control and bidi characters in what it prints', async () => {
@@ -210,7 +262,7 @@ describe('cli approver', () => {
         return true;
       },
     } as unknown as NodeJS.WritableStream;
-    const approver = cliApprover({ input, output, newCode: () => 'abcd' });
+    const approver = cliApprover({ input, output, newCode: () => 'abcd', graceMs: 0 });
 
     expect(await approver.request(pending(), signal())).toEqual({ approved: false });
     broken = false;

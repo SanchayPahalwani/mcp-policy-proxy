@@ -224,6 +224,12 @@ export async function startFromConfig(
       try {
         await server?.close();
       } finally {
+        // Without this a CLI approver keeps reading stdin, and the process never exits.
+        try {
+          await approver.close?.();
+        } catch (e) {
+          log(`error: the approver did not close${codeOf(e)}`);
+        }
         await upstreams.close();
         audit.close();
         markClosed();

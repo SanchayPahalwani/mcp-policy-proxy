@@ -509,6 +509,33 @@ describe('a client that gives up', () => {
     expect(forward).toHaveBeenCalledTimes(1);
   });
 
+  it('a throw after the wait still logs that approval was asked, and the answer', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const approver = fixedApprover(() => ({ approved: true, approver: 'test' }));
+    let reads = 0;
+    // The first reading is the call's; the second, right after the wait, throws.
+    const clock = () => {
+      if (++reads === 2) throw new Error('clock is broken');
+      return 1_000;
+    };
+    const sink = memoryAuditSink();
+    const gate = policyGate({ policy: APPROVE_ONE_SEND, audit: sink, approver, clock });
+    const forward = vi.fn(async () => sent);
+
+    const result = await gate.callTool(writer, send, forward);
+    expect(textOf(result)).toBe('Denied by policy (internal_error): policy evaluation failed');
+    expect(forward).not.toHaveBeenCalled();
+    expect(decisions(sink.events)).toEqual([
+      expect.objectContaining({
+        code: 'internal_error',
+        args: null,
+        approval_requested_at: ISO(1_000),
+        approval: { approved: true, approver: 'test' },
+        forwarded: false,
+      }),
+    ]);
+  });
+
   it('does not ask about a call whose client already left', async () => {
     const asked: PendingApproval[] = [];
     const approver = fixedApprover((pending) => {

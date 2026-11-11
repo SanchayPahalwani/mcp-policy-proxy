@@ -157,7 +157,10 @@ export function internalErrorEvent(
   target: { server: string; tool: string },
   callId: string,
   now: number,
+  approval?: ApprovalStep,
 ): DecisionEvent {
+  const outcome = approval?.outcome;
+  const answer = outcome?.kind === 'approved' || outcome?.kind === 'refused' ? outcome : undefined;
   return {
     type: 'decision',
     ts: iso(now),
@@ -171,6 +174,8 @@ export function internalErrorEvent(
     code: 'internal_error',
     reason: 'policy evaluation failed',
     visible: false,
+    ...(approval?.requestedAt !== undefined && { approval_requested_at: approval.requestedAt }),
+    ...(answer && { approval: { ...answer.result } }),
     forwarded: false,
     policy_sha256: policy.sha256,
   };
@@ -181,6 +186,8 @@ export interface CallProgress {
   callId?: string;
   decisionWritten: boolean;
   forwardedWritten: boolean;
+  /** Set once the approver has been asked, so a later throw still logs that it was. */
+  approval?: ApprovalStep;
 }
 
 /**
@@ -202,7 +209,9 @@ export function failureEvent(
     now = Date.now();
   }
   const callId = progress.callId ?? randomUUID();
-  if (!progress.decisionWritten) return internalErrorEvent(policy, caller, target, callId, now);
+  if (!progress.decisionWritten) {
+    return internalErrorEvent(policy, caller, target, callId, now, progress.approval);
+  }
   if (!progress.forwardedWritten) return undefined;
   return outcomeEvent(policy, callId, now, now, {
     ok: false,

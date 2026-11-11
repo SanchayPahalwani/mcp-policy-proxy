@@ -29,8 +29,10 @@ export interface OutcomeEvent {
   ok: boolean;
   is_error: boolean;
   /**
-   * `protocol_error <code>` for a JSON-RPC reserved code, else `error`. Never the message,
-   * class or any other code: an upstream picks those and can make them echo an argument.
+   * One of three values: `protocol_error <code>` for a JSON-RPC reserved code from the
+   * upstream, `error` for any other upstream failure, or `internal_error` when the proxy
+   * itself failed after clearing the call. Never the message, class or another code: an
+   * upstream picks those and can make them echo an argument.
    */
   error?: string;
   duration_ms: number;

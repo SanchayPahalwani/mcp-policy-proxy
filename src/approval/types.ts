@@ -20,6 +20,8 @@ export interface ApprovalResult {
 export interface Approver {
   /** `signal` aborts when the proxy stops waiting; the answer is then ignored. */
   request(pending: PendingApproval, signal: AbortSignal): Promise<ApprovalResult>;
+  /** Stops for good: waiting requests are refused, and so is every later one. */
+  close?(): void | Promise<void>;
 }
 
 export const denyApprover: Approver = {

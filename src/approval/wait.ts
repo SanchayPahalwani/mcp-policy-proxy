@@ -48,8 +48,7 @@ export async function awaitApproval(
       resolve({ kind: 'cancelled' });
       controller.abort(new Error('the client gave up'));
     };
-    if (clientSignal?.aborted) onClientAbort();
-    else clientSignal?.addEventListener('abort', onClientAbort, { once: true });
+    clientSignal?.addEventListener('abort', onClientAbort, { once: true });
   });
   const answer = (async (): Promise<ApprovalOutcome> => {
     try {
