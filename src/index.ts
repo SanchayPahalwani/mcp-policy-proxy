@@ -1,3 +1,5 @@
+export * from './audit/log.js';
+export * from './audit/redact.js';
 export * from './proxy/auth.js';
 export * from './proxy/gate.js';
 export * from './proxy/http.js';

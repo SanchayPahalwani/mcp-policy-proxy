@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Client, ProtocolError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { ProtocolError, type Client } from '@modelcontextprotocol/client';
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { loadPolicy, parsePolicy, type Policy } from '../../src/policy/load.js';
 import { sha256Hex, staticTokenAuthenticator } from '../../src/proxy/auth.js';
@@ -8,6 +8,7 @@ import { policyGate } from '../../src/proxy/gate.js';
 import { startHttpProxy, type RunningProxy } from '../../src/proxy/http.js';
 import { Upstreams } from '../../src/proxy/upstreams.js';
 import { inMemoryUpstream, type MockCall, type MockTool } from '../helpers/mock-upstream.js';
+import { call, connectAgent, textOf } from '../helpers/proxy-client.js';
 
 const EXAMPLE = loadPolicy(fileURLToPath(new URL('../../examples/policy.yaml', import.meta.url)));
 const DOCS_TOOLS = ['list_drafts', 'get_draft', 'create_draft', 'update_draft', 'delete_draft'];
@@ -30,7 +31,7 @@ interface Harness {
 }
 
 async function start(
-  opts: { policy?: Policy; mailHandler?: MockTool['handler'] } = {},
+  opts: { policy?: Policy; mailHandler?: MockTool['handler']; clock?: () => number } = {},
 ): Promise<Harness> {
   const calls = { docs: [] as MockCall[], web: [] as MockCall[], mail: [] as MockCall[] };
   const clock = { now: 0 };
@@ -55,7 +56,7 @@ async function start(
   cleanups.push(() => upstreams.close());
   const proxy = await startHttpProxy({
     upstreams,
-    gate: policyGate({ policy: opts.policy ?? EXAMPLE, clock: () => clock.now }),
+    gate: policyGate({ policy: opts.policy ?? EXAMPLE, clock: opts.clock ?? (() => clock.now) }),
     authenticator: staticTokenAuthenticator([
       { name: 'writer', token_sha256: sha256Hex('tok-writer') },
       { name: 'release-manager', token_sha256: sha256Hex('tok-release') },
@@ -66,32 +67,9 @@ async function start(
 }
 
 async function connect(proxy: RunningProxy, token: string, session?: string): Promise<Client> {
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-  if (session !== undefined) headers['x-agent-session'] = session;
-  const client = new Client(
-    { name: 'test-agent', version: '0.0.0' },
-    { versionNegotiation: { mode: 'auto' } },
-  );
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(proxy.url), { requestInit: { headers } }),
-  );
+  const client = await connectAgent(proxy, token, session);
   cleanups.push(() => client.close());
   return client;
-}
-
-async function call(
-  client: Client,
-  name: string,
-  args?: Record<string, unknown>,
-): Promise<CallToolResult> {
-  return (await client.callTool(
-    args === undefined ? { name } : { name, arguments: args },
-  )) as CallToolResult;
-}
-
-function textOf(result: CallToolResult): string {
-  const first = result.content[0];
-  return first?.type === 'text' ? first.text : '';
 }
 
 const TEAM_MAIL = { to: 'team@example.test', body: 'hello' };
@@ -131,7 +109,7 @@ describe('policy gate', () => {
       );
       expect(error, name).toBeInstanceOf(ProtocolError);
       expect((error as ProtocolError).code, name).toBe(-32602);
-      expect((error as ProtocolError).message, name).toContain(`Tool ${name} not found`);
+      expect((error as ProtocolError).message, name).toBe(`Tool ${name} not found`);
       messages.push((error as ProtocolError).message.replace(name, '<name>'));
     }
     expect(new Set(messages).size).toBe(1);
@@ -253,7 +231,9 @@ rules:
 
     const result = await call(release, 'docs__publish', { id: 7 });
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toMatch(/^Denied by policy \(approval_unavailable\)/);
+    expect(textOf(result)).toBe(
+      'Denied by policy (approval_unavailable): this call needs approval and no approver is configured',
+    );
     expect(calls.docs).toEqual([]);
   });
 
@@ -281,5 +261,67 @@ rules:
     expect(textOf(result)).toMatch(/^Denied by policy \(internal_error\)/);
     expect(logged).toHaveBeenCalled();
     expect(calls.mail).toEqual([]);
+  });
+
+  it('fails closed when the clock throws', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { proxy, calls } = await start({
+      clock: () => {
+        throw new Error('clock is broken');
+      },
+    });
+    const writer = await connect(proxy, 'tok-writer');
+
+    const result = await call(writer, 'mail__send', TEAM_MAIL);
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('Denied by policy (internal_error): policy evaluation failed');
+    expect(logged).toHaveBeenCalled();
+    expect(calls.mail).toEqual([]);
+  });
+
+  it('lists nothing when policy evaluation throws during listing', async () => {
+    const broken = parsePolicy(`
+version: 1
+rules:
+  - id: any-send
+    identities: [writer]
+    server: mail
+    tools: [send]
+    effect: allow
+`);
+    const rule = broken.rules[0];
+    if (!rule) throw new Error('fixture has no rule');
+    rule.matches = () => {
+      throw new Error('boom');
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { proxy } = await start({ policy: broken });
+    const writer = await connect(proxy, 'tok-writer');
+
+    expect((await writer.listTools()).tools).toEqual([]);
+    expect(logged).toHaveBeenCalled();
+  });
+
+  it('forwards a glob-allowed tool the upstream lacks and returns its own error', async () => {
+    const policy = parsePolicy(`
+version: 1
+rules:
+  - id: all-docs
+    identities: [writer]
+    server: docs
+    tools: ['*']
+    effect: allow
+`);
+    const { proxy, calls } = await start({ policy });
+    const writer = await connect(proxy, 'tok-writer');
+
+    const error = await writer.callTool({ name: 'docs__no_such_tool', arguments: {} }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ProtocolError);
+    expect((error as ProtocolError).code).toBe(-32602);
+    expect((error as ProtocolError).message).toBe('Tool no_such_tool not found');
+    expect(calls.docs).toEqual([{ tool: 'no_such_tool', args: {} }]);
   });
 });
