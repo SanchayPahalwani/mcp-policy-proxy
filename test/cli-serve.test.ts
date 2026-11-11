@@ -19,8 +19,8 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** Command lines of this process's descendants that run the docs mock. */
-function docsServers(): string[] {
+/** Command lines of this process's descendants that run an eval mock server. */
+function mockServers(): string[] {
   const rows = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' })
     .split('\n')
     .map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line))
@@ -61,14 +61,16 @@ function sink(): { stream: Writable; text: () => string } {
 }
 
 describe('serve', () => {
-  it('serves the docs mock from a copy of the example config', async () => {
+  it('serves the mock servers from a copy of the example config', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mcp-policy-serve-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const example = parse(readFileSync(join(EXAMPLES, 'proxy.config.yaml'), 'utf8'));
     example.listen.port = 0;
     example.approval = { type: 'deny' };
     example.policy = join(EXAMPLES, 'policy.yaml');
-    example.upstreams.docs.cwd = EXAMPLES;
+    for (const upstream of Object.values<{ cwd?: string }>(example.upstreams)) {
+      upstream.cwd = EXAMPLES;
+    }
     const file = join(dir, 'proxy.config.yaml');
     writeFileSync(file, stringify(example));
 
@@ -82,10 +84,19 @@ describe('serve', () => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain('docs__create_draft');
       expect(tools.map((t) => t.name)).not.toContain('docs__publish');
+      expect(tools.map((t) => t.name)).toEqual(
+        expect.arrayContaining(['web__fetch_page', 'mail__send']),
+      );
       const created = await call(client, 'docs__create_draft', { title: 'Notes', body: 'hello' });
       expect(textOf(created)).toBe('Created draft d1');
-      // The answer came from a docs server this process started.
-      expect(docsServers()).not.toEqual([]);
+      const page = await call(client, 'web__fetch_page', {
+        url: 'https://docs.example.test/release-notes',
+      });
+      expect(textOf(page)).toContain('Release notes');
+      // The answers came from the docs, web and mail servers this process started.
+      for (const name of ['docs', 'web', 'mail']) {
+        expect(mockServers().some((c) => c.endsWith(`eval/servers/stdio.ts ${name}`))).toBe(true);
+      }
     } finally {
       await client.close();
     }
@@ -94,12 +105,18 @@ describe('serve', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as { type: string });
-    expect(events.map((e) => e.type)).toEqual(['list', 'decision', 'outcome']);
+    expect(events.map((e) => e.type)).toEqual([
+      'list',
+      'decision',
+      'outcome',
+      'decision',
+      'outcome',
+    ]);
     expect(events[1]).toMatchObject({ tool: 'create_draft', effect: 'allow', forwarded: true });
 
     await running.close();
     closed = true;
-    await until(() => docsServers().length === 0);
+    await until(() => mockServers().length === 0);
   });
 });
 

@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse, stringify } from 'yaml';
 import { main } from '../src/cli.js';
 
 const EXAMPLES = fileURLToPath(new URL('../examples/', import.meta.url));
@@ -151,7 +152,7 @@ cases:
 });
 
 describe('validate', () => {
-  it('exits 0 for the example policy against the example config, printing warnings', async () => {
+  it('exits 0 with no findings for the example policy against the example config', async () => {
     const r = await run([
       'validate',
       '--policy',
@@ -159,6 +160,15 @@ describe('validate', () => {
       '--config',
       `${EXAMPLES}proxy.config.yaml`,
     ]);
+    expect(r).toEqual({ code: 0, out: '0 error(s), 0 warning(s)\n', err: '' });
+  });
+
+  it('exits 0 and warns about rules for servers the config leaves out', async () => {
+    const example = parse(readFileSync(`${EXAMPLES}proxy.config.yaml`, 'utf8'));
+    delete example.upstreams.web;
+    delete example.upstreams.mail;
+    const config = temp('proxy.config.yaml', stringify(example));
+    const r = await run(['validate', '--policy', POLICY, '--config', config]);
     expect(r.code).toBe(0);
     expect(r.out).toContain(
       'warning: rule "fetch-docs-site": server "web" is not in the configuration',

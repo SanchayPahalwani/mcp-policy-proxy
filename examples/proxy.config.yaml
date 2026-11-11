@@ -1,4 +1,4 @@
-# Example proxy config: serves the docs mock over stdio to agents on 127.0.0.1:8787.
+# Example proxy config: serves the docs, web and mail mocks over stdio to agents on 127.0.0.1:8787.
 # Start it with: WRITER_TOKEN=... RELEASE_MANAGER_TOKEN=... npm run cli -- serve --config examples/proxy.config.yaml
 # Relative paths are read from this file's directory.
 
@@ -17,7 +17,9 @@ identities:
 # The MCP servers behind the proxy. Their tools are listed to agents as <name>__<tool>.
 upstreams:
   docs: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, docs] }
-  # web: { transport: http, url: http://127.0.0.1:9001/mcp, headers_env: { Authorization: WEB_UPSTREAM_AUTH } }
+  web: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, web] }
+  mail: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, mail] }
+  # other: { transport: http, url: http://127.0.0.1:9001/mcp, headers_env: { Authorization: OTHER_UPSTREAM_AUTH } }
 
 # The rules every call is checked against.
 policy: ./policy.yaml

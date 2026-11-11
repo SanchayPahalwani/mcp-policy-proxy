@@ -1,11 +1,16 @@
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { Ledger } from '../ledger.js';
+import { PAGES } from '../suite/tasks.js';
 import { createDocsServer } from './docs.js';
+import { createMailServer } from './mail.js';
+import { createWebServer } from './web.js';
 
 // Run as a child process by the proxy, so the ledger lives and dies with this process.
 const servers: Record<string, () => McpServer> = {
   docs: () => createDocsServer(new Ledger()).server,
+  web: () => createWebServer(new Ledger(), new Map(Object.entries(PAGES))).server,
+  mail: () => createMailServer(new Ledger()).server,
 };
 
 const name = process.argv[2];

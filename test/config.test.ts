@@ -78,6 +78,13 @@ describe('loadConfig', () => {
       args: ['tsx', '../eval/servers/stdio.ts', 'docs'],
       cwd: EXAMPLES,
     });
+    for (const name of ['web', 'mail']) {
+      expect(config.upstreams[name]).toMatchObject({
+        transport: 'stdio',
+        args: ['tsx', '../eval/servers/stdio.ts', name],
+        cwd: EXAMPLES,
+      });
+    }
   });
 
   it('resolves a relative upstream cwd against the config directory', () => {
@@ -154,7 +161,7 @@ describe('loadConfig', () => {
 });
 
 describe('startFromConfig', () => {
-  it('starts the example, spawning the docs server over stdio', async () => {
+  it('starts the example, spawning the docs, web and mail servers over stdio', async () => {
     const config = loadConfig(EXAMPLE);
     if (config.listen.transport !== 'http') throw new Error('the example listens on HTTP');
     const audit = join(tempDir(), 'audit.jsonl');
@@ -165,8 +172,8 @@ describe('startFromConfig', () => {
     );
     cleanups.push(() => running.close());
     expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
-    // The example policy also covers the web and mail servers that the eval adds later.
-    expect(lines.some((l) => l.includes('server "web" is not configured'))).toBe(true);
+    // Every server the example policy names is configured, so no rule is dead.
+    expect(lines.filter((l) => l.includes('is not configured'))).toEqual([]);
   });
 
   it('names an unset or empty token variable without printing any token', async () => {
