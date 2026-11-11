@@ -237,10 +237,13 @@ describe('explain', () => {
 
   it('prints an allow, and "-" for an unset rule', async () => {
     const allowed = await explain('writer', 'docs__create_draft');
-    expect(allowed.out).toContain('code: allowed\nrule: writer-drafts\n');
+    expect(allowed.out).toBe(
+      'effect: allow\ncode: allowed\nrule: writer-drafts\nreason: allowed by rule "writer-drafts"\nvisible: true\n',
+    );
     const none = await explain('writer', 'docs__delete_draft');
-    expect(none.out).toContain('effect: deny\ncode: no_matching_rule\nrule: -\n');
-    expect(none.out).toContain('visible: false');
+    expect(none.out).toBe(
+      'effect: deny\ncode: no_matching_rule\nrule: -\nreason: no rule allows "writer" to call docs.delete_draft\nvisible: false\n',
+    );
   });
 
   it('applies --args', async () => {
@@ -254,6 +257,49 @@ describe('explain', () => {
     expect((await explain('writer', 'docs__publish', ['--args', '{nope'])).code).toBe(2);
     expect((await explain('writer', 'docs__publish', ['--args', '[1]'])).code).toBe(2);
     expect((await run(['explain', '--policy', POLICY, '--tool', 'docs__publish'])).code).toBe(2);
+  });
+});
+
+describe('unexpected arguments and help', () => {
+  it('rejects extra positionals in validate and explain', async () => {
+    const bad = temp('bad.yaml', 'version: 2\nrules: []\n');
+    const v = await run(['validate', '--policy', POLICY, bad]);
+    expect(v.code).toBe(2);
+    expect(v.out).toBe('');
+    const e = await run([
+      'explain',
+      '--policy',
+      POLICY,
+      '--identity',
+      'writer',
+      '--tool',
+      'docs__publish',
+      'extra',
+    ]);
+    expect(e.code).toBe(2);
+  });
+
+  it('prints usage to stdout and exits 0 for --help or -h anywhere', async () => {
+    for (const argv of [['--help'], ['check', '-h'], ['validate', '--policy', POLICY, '--help']]) {
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('usage: mcp-policy-proxy serve');
+      expect(r.err).toBe('');
+    }
+  });
+
+  it('notes a sessions file with no recorded calls, without changing the exit code', async () => {
+    const path = temp('empty.jsonl', '{"type":"outcome","ts":1}\n');
+    const r = await run(['check', '--policy', POLICY, path]);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe(`note: ${path}: no recorded calls\n`);
+  });
+
+  it('exits 2 for a decision line the reader does not recognise', async () => {
+    const path = temp('odd.jsonl', '{"type":"Decision","ts":1,"forwarded":true}\n');
+    const r = await run(['check', '--policy', POLICY, path]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain(`${path}:1: unknown event type`);
   });
 });
 

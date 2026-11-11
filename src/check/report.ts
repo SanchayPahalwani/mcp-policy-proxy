@@ -8,6 +8,10 @@ export type Format = 'text' | 'json' | 'github';
 const data = (s: string) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 const property = (s: string) => data(s).replace(/:/g, '%3A').replace(/,/g, '%2C');
 
+// A recorded value could hold a newline and a fake summary line; text output shows it escaped.
+const printable = (s: string) =>
+  s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, (c) => `\\u{${c.charCodeAt(0).toString(16)}}`);
+
 const lines = (rows: string[]) => rows.join('\n') + '\n';
 const pretty = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
 
@@ -20,7 +24,7 @@ export function formatCheck(result: CheckResult, format: Format): string {
     const what = `${v.identity} ${v.server}.${v.tool} ${v.code}: ${v.reason}`;
     return format === 'github'
       ? `::error file=${property(v.file)},line=${v.line},title=Policy violation::${data(what)}`
-      : `${v.file}:${v.line} ${what}`;
+      : printable(`${v.file}:${v.line} ${what}`);
   });
   return lines([...rows, summary]);
 }

@@ -124,6 +124,19 @@ describe('readSessionFile', () => {
     expect(records[1]).toMatchObject({ line: 5, tool: 'get_draft', approved: false });
   });
 
+  it('reads a file with a byte-order mark', () => {
+    const path = write('bom.jsonl', ['\uFEFF' + JSON.stringify(base)]);
+    expect(readSessionFile(path)).toHaveLength(1);
+  });
+
+  it('reads CRLF line endings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sessions-'));
+    dirs.push(dir);
+    const path = join(dir, 'crlf.jsonl');
+    writeFileSync(path, `${JSON.stringify(base)}\r\n${JSON.stringify({ ...base, tool: 'x' })}\r\n`);
+    expect(readSessionFile(path).map((r) => r.line)).toEqual([1, 2]);
+  });
+
   it('skips blank lines and keeps real line numbers', () => {
     const path = write('b.jsonl', ['', { ...base }, '   ', { ...base, tool: 'x' }, '']);
     expect(readSessionFile(path).map((r) => r.line)).toEqual([2, 4]);
@@ -161,6 +174,84 @@ describe('readSessionFile', () => {
       expect(error.line).toBe(line);
       expect(error.message).toMatch(pattern);
       expect(error.message.startsWith(`${path}:${line}: `)).toBe(true);
+    });
+
+    const decision = {
+      type: 'decision',
+      ts: base.ts,
+      forwarded: true,
+      session: 's',
+      identity: 'w',
+      server: 'docs',
+      tool: 'publish',
+      args: {},
+    };
+    it.each([
+      ['type "Decision"', { ...decision, type: 'Decision' }],
+      ['type " decision"', { ...decision, type: ' decision' }],
+      ['type null', { ...decision, type: null }],
+      ['type 5', { ...decision, type: 5 }],
+      ['type ""', { ...decision, type: '' }],
+      ['type "tool_call"', { ...decision, type: 'tool_call' }],
+    ])('refuses %s as an unknown event type', (_n, event) => {
+      const error = failure(write('t.jsonl', [event]));
+      expect(error.message).toMatch(/unknown event type/);
+      expect(error.line).toBe(1);
+    });
+
+    it.each([
+      ['"true"', 'true'],
+      ['1', 1],
+      ['missing', undefined],
+      ['null', null],
+    ])('refuses a decision whose forwarded is %s', (_n, forwarded) => {
+      expect(failure(write('f.jsonl', [{ ...decision, forwarded }])).message).toMatch(
+        /"forwarded"/,
+      );
+    });
+
+    it.each([
+      '1',
+      '2',
+      'Jan 5 2026',
+      '2026-01-05',
+      '2026-01-05T10:00:00',
+      '2026-01-05 10:00:00Z',
+      '2026-13-45T10:00:00Z',
+    ])('refuses the ts string %j', (ts) => {
+      expect(failure(write('t.jsonl', [{ ...base, ts }])).message).toMatch(/"ts"/);
+    });
+
+    it.each([
+      '2026-01-05T10:00:00Z',
+      '2026-01-05T10:00:00.123456789Z',
+      '2026-01-05T10:00:00+02:00',
+      '2026-01-05T10:00:00-05:30',
+    ])('accepts the ts string %j', (ts) => {
+      expect(readSessionFile(write('t.jsonl', [{ ...base, ts }]))).toHaveLength(1);
+    });
+
+    it('refuses a non-finite numeric ts', () => {
+      expect(
+        failure(write('t.jsonl', ['{"ts":1e999,"identity":"w","server":"d","tool":"t"}'])).line,
+      ).toBe(1);
+    });
+
+    it('refuses target fields that name different calls', () => {
+      const { server: _s, tool: _t, ...rest } = base;
+      const bad = [
+        { ...rest, name: 'docs__list_drafts', tool: 'docs__publish' },
+        { ...rest, name: 'docs__publish', server: 'docs', tool: 'list_drafts' },
+        { ...rest, name: 'web__publish', server: 'docs', tool: 'publish' },
+      ];
+      for (const event of bad) {
+        expect(failure(write('c.jsonl', [event])).message).toMatch(/conflicting target fields/);
+      }
+      const agreeing = [
+        { ...rest, name: 'docs__publish', tool: 'docs__publish' },
+        { ...rest, name: 'docs__publish', server: 'docs', tool: 'publish' },
+      ];
+      expect(readSessionFile(write('a.jsonl', agreeing))).toHaveLength(2);
     });
 
     it('rejects a forwarded decision event whose args are not an object', () => {

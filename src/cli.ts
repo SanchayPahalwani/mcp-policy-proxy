@@ -28,6 +28,10 @@ export async function main(
   argv: string[],
   io: CliIo = { stdout: process.stdout, stderr: process.stderr },
 ): Promise<number> {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    io.stdout.write(USAGE);
+    return 0;
+  }
   const [command, ...rest] = argv;
   if (command !== undefined && Object.hasOwn(OFFLINE, command)) {
     try {

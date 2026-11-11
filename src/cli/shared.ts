@@ -38,3 +38,9 @@ export function policyAt(path: string) {
     throw new InputError(messageOf(e));
   }
 }
+
+export function noPositionals(positionals: string[]): void {
+  if (positionals.length > 0) {
+    throw new InputError(`unexpected argument "${positionals[0]}"`);
+  }
+}

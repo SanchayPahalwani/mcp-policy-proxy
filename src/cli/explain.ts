@@ -2,16 +2,17 @@ import type { CliIo } from '../cli.js';
 import { decide } from '../policy/engine.js';
 import { LimitState } from '../policy/limits.js';
 import { splitName } from '../policy/names.js';
-import { InputError, parse, policyAt, required } from './shared.js';
+import { InputError, noPositionals, parse, policyAt, required } from './shared.js';
 
 export function explain(args: string[], io: CliIo): number {
-  const { values } = parse(args, {
+  const { values, positionals } = parse(args, {
     policy: { type: 'string' },
     identity: { type: 'string' },
     tool: { type: 'string' },
     args: { type: 'string' },
     session: { type: 'string' },
   });
+  noPositionals(positionals);
   const policy = policyAt(required(values.policy, '--policy'));
   const identity = required(values.identity, '--identity');
   const name = required(values.tool, '--tool');

@@ -5,14 +5,15 @@ import { loadConfig } from '../config/schema.js';
 import { lintPolicy } from '../policy/lint.js';
 import { parsePolicy, PolicyError } from '../policy/load.js';
 import { messageOf } from '../util.js';
-import { formatOf, InputError, parse, required } from './shared.js';
+import { formatOf, InputError, noPositionals, parse, required } from './shared.js';
 
 export function validate(args: string[], io: CliIo): number {
-  const { values } = parse(args, {
+  const { values, positionals } = parse(args, {
     policy: { type: 'string' },
     config: { type: 'string' },
     format: { type: 'string' },
   });
+  noPositionals(positionals);
   const format = formatOf(values.format, io);
   const file = required(values.policy, '--policy');
   let text: string;

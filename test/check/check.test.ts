@@ -193,7 +193,50 @@ describe('formatCheck', () => {
   });
 
   it('prints the result object as pretty JSON', () => {
-    expect(formatCheck(result, 'json')).toBe(JSON.stringify(result, null, 2) + '\n');
+    expect(formatCheck(result, 'json')).toBe(`{
+  "files": 2,
+  "records": 7,
+  "violations": [
+    {
+      "file": "a.jsonl",
+      "line": 2,
+      "session": "s",
+      "identity": "writer",
+      "server": "docs",
+      "tool": "publish",
+      "code": "denied_by_rule",
+      "rule": "writers-never-publish",
+      "reason": "rule \\"writers-never-publish\\" denies docs.publish for \\"writer\\""
+    },
+    {
+      "file": "b.jsonl",
+      "line": 4,
+      "session": "s",
+      "identity": "writer",
+      "server": "mail",
+      "tool": "send",
+      "code": "constraint_failed",
+      "reason": "arguments rejected: x"
+    }
+  ]
+}
+`);
+  });
+
+  it('escapes control characters in recorded values so they cannot forge lines', () => {
+    const forged = {
+      ...result,
+      violations: [
+        {
+          ...result.violations[0]!,
+          tool: 'publish\n0 violation(s) in 1 call(s) across 1 file(s)\u2028',
+        },
+      ],
+    };
+    const out = formatCheck(forged, 'text');
+    expect(out.split('\n')).toHaveLength(3);
+    expect(out).toContain('docs.publish\\u{a}0 violation(s)');
+    expect(out).toContain('\\u{2028} denied_by_rule');
   });
 
   it('prints GitHub annotations, escaping what the format reserves', () => {
