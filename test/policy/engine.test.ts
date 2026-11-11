@@ -131,18 +131,26 @@ describe('decide', () => {
       visible: false,
     });
     const mail = run(call({ server: 'mail', tool: 'send' }));
-    expect(mail.code).toBe('no_matching_rule');
-    expect(mail.reason).toBe('no rule allows "writer" to call mail.send');
-    expect(mail.visible).toBe(false);
+    expect(mail).toEqual({
+      effect: 'deny',
+      code: 'no_matching_rule',
+      reason: 'no rule allows "writer" to call mail.send',
+      applied: [],
+      visible: false,
+    });
   });
 
   it('lets a rule without constraints keep a call another rule rejects', () => {
     const long = call({ tool: 'create_draft', args: { title: 'x'.repeat(121) } });
     const withBroad = run(long);
-    expect(withBroad.effect).toBe('allow');
-    expect(withBroad.code).toBe('allowed');
-    expect(withBroad.rule).toBe('broad-docs');
-    expect(withBroad.applied).toEqual(['broad-docs']);
+    expect(withBroad).toEqual({
+      effect: 'allow',
+      code: 'allowed',
+      rule: 'broad-docs',
+      reason: 'allowed by rule "broad-docs"',
+      applied: ['broad-docs'],
+      visible: true,
+    });
 
     const narrow = parsePolicy(yamlOf([WRITER_DRAFTS, NEVER_PUBLISH]));
     expect(run(long, narrow)).toEqual({
@@ -170,9 +178,13 @@ describe('decide', () => {
     expect(outside.reason).toMatch(/^arguments rejected: rule "anyone-fetch": /);
 
     const missing = run(call({ server: 'web', tool: 'fetch_page', args: {} }));
-    expect(missing.code).toBe('constraint_failed');
-    expect(missing.reason).toContain('url is missing');
-    expect(missing.visible).toBe(true);
+    expect(missing).toEqual({
+      effect: 'deny',
+      code: 'constraint_failed',
+      reason: 'arguments rejected: rule "anyone-fetch": url is missing',
+      applied: [],
+      visible: true,
+    });
   });
 
   it('joins the failing constraint of each candidate', () => {
@@ -211,7 +223,6 @@ describe('decide', () => {
   it('lets the stricter effect win over an allow', () => {
     const p = parsePolicy(
       yamlOf([
-        ...ALL,
         `
   - id: release-allow
     identities: [release-manager]
@@ -219,13 +230,18 @@ describe('decide', () => {
     tools: [publish]
     effect: allow
 `,
+        ...ALL,
       ]),
     );
     const d = run(call({ identity: 'release-manager', tool: 'publish' }), p);
-    expect(d.effect).toBe('require_approval');
-    expect(d.code).toBe('approval_required');
-    expect(d.rule).toBe('release-publish');
-    expect(d.applied).toEqual(['release-publish', 'release-allow']);
+    expect(d).toEqual({
+      effect: 'require_approval',
+      code: 'approval_required',
+      rule: 'release-publish',
+      reason: 'rule "release-publish" requires approval',
+      applied: ['release-allow', 'release-publish'],
+      visible: true,
+    });
   });
 });
 
@@ -263,6 +279,34 @@ describe('limits', () => {
       visible: true,
     });
     expect(run(call({ session: 's2', at: 63_000 }), policy, state).code).toBe('allowed');
+  });
+
+  it('fails closed when the clock steps back before recorded calls', () => {
+    const p = parsePolicy(
+      yamlOf([
+        `
+  - id: burst
+    identities: [writer]
+    server: docs
+    tools: ["*"]
+    effect: allow
+    limits:
+      per_minute: 3
+`,
+      ]),
+    );
+    const state = new LimitState();
+    for (const at of [100_000, 101_000, 102_000]) {
+      const c = call({ at });
+      commit(state, c, decide(p, state, c));
+    }
+    expect(decide(p, state, call({ at: 99_000 })).code).toBe('limit_exceeded');
+  });
+
+  it('throws on a non-finite call time', () => {
+    for (const at of [NaN, Infinity, -Infinity]) {
+      expect(() => decide(policy, new LimitState(), call({ at }))).toThrow(RangeError);
+    }
   });
 
   it('reports per session before per minute inside one rule', () => {

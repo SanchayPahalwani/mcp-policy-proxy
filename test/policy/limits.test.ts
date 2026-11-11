@@ -43,4 +43,26 @@ describe('LimitState', () => {
     expect(s.sessionCount('r', 'alice', 's1')).toBe(0);
     expect(s.sessionCount('r', 'alice', 's2')).toBe(2);
   });
+
+  it('keeps all counters of a session that is still active', () => {
+    const min = 60_000;
+    const s = new LimitState();
+    s.record('one-publish', 'alice', 's1', 0);
+    for (const t of [20, 40, 61]) s.record('drafts', 'alice', 's1', t * min);
+    expect(s.sessionCount('one-publish', 'alice', 's1')).toBe(1);
+  });
+
+  it('does not rewind last-seen on a late record', () => {
+    const s = new LimitState({ sessionIdleMs: 1000 });
+    s.record('r', 'alice', 's1', 900);
+    s.record('r', 'alice', 's1', 0);
+    s.record('r', 'alice', 'other', 1500);
+    expect(s.sessionCount('r', 'alice', 's1')).toBe(2);
+  });
+
+  it('counts timestamps newer than the window start with no upper bound', () => {
+    const s = new LimitState();
+    s.record('r', 'alice', 's1', 100_000);
+    expect(s.minuteCount('r', 'alice', 99_000)).toBe(1);
+  });
 });

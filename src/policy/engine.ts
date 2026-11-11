@@ -33,7 +33,11 @@ function denyRule(policy: Policy, identity: string, server: string, tool: string
 }
 
 function permittingRules(policy: Policy, identity: string, server: string, tool: string) {
-  return policy.rules.filter((r) => r.spec.effect !== 'deny' && r.matches(identity, server, tool));
+  return policy.rules.filter(
+    (r) =>
+      (r.spec.effect === 'allow' || r.spec.effect === 'require_approval') &&
+      r.matches(identity, server, tool),
+  );
 }
 
 export function visible(policy: Policy, identity: string, server: string, tool: string): boolean {
@@ -59,6 +63,7 @@ function exhaustion(rule: CompiledRule, state: LimitState, call: Call): string |
 }
 
 export function decide(policy: Policy, state: LimitState, call: Call): Decision {
+  if (!Number.isFinite(call.at)) throw new RangeError('call.at must be a finite number');
   const { identity, server, tool } = call;
   const deny = (
     code: DecisionCode,
