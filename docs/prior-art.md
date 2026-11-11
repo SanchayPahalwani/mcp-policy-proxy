@@ -27,22 +27,22 @@ you would run in production. If you need one today, start with agentgateway.
 
 ## Small policy proxies (closest in scope)
 
-| | mcp-policy-gateway | MCP Seatbelt | AgentGate | this repo |
-|---|---|---|---|---|
-| Source | [Spuddy10345/mcp-policy-gateway](https://github.com/Spuddy10345/mcp-policy-gateway) | [kryptosai/mcp-seatbelt](https://github.com/kryptosai/mcp-seatbelt) | [chidhvilasa/agentgate](https://github.com/chidhvilasa/agentgate) | |
-| Language, license | Python, Apache-2.0 | npm package, MIT | TypeScript, Apache-2.0 | TypeScript, Apache-2.0 |
-| Stars that day | 0 | 3 | not stated | n/a |
-| Upstream transports | stdio, Streamable HTTP | not stated | stdio only | stdio, Streamable HTTP |
-| Several upstreams | yes | yes, by URL path | yes | yes, namespaced tool names |
-| Identity | bearer token per request (HTTP), fixed at launch (stdio) | "per-agent" RBAC; how identity is established is not stated | none for agents | bearer token per request (HTTP), fixed at launch (stdio) |
-| Policy | YAML, default deny, first match wins | YAML; modes default-deny, allowlist, audit; starts in audit mode | YAML, default deny, first match wins | YAML, default deny only, deny overrides allow (order does not matter) |
-| Argument constraints | yes (`when:` blocks) | yes (patterns, JSON Schema) | path, command, host matching | yes (`when:` list, fail closed on missing values) |
-| Require approval | not stated | not stated | yes | yes (CLI prompt, webhook) |
-| Limits | token buckets | per minute | not stated | per minute and per session |
-| Filtered tool list | yes | not stated | quarantined tools hidden | yes |
-| Audit | JSONL, hash-chained | signed log | SQLite, hash-chained | JSONL plus OpenTelemetry spans |
-| Offline use of the policy | `validate`, `explain`, dry-run | policy test files, `simulate`, `fuzz`, a GitHub Action that simulates sample calls | `replay` of one past event | `check` over recorded sessions, policy test files, GitHub Action |
-| Injection numbers | none ("not a prompt-injection detector") | none (latency numbers only) | none | with/without table from a script |
+|                           | mcp-policy-gateway                                                                  | MCP Seatbelt                                                                       | AgentGate                                                         | this repo                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Source                    | [Spuddy10345/mcp-policy-gateway](https://github.com/Spuddy10345/mcp-policy-gateway) | [kryptosai/mcp-seatbelt](https://github.com/kryptosai/mcp-seatbelt)                | [chidhvilasa/agentgate](https://github.com/chidhvilasa/agentgate) |                                                                       |
+| Language, license         | Python, Apache-2.0                                                                  | npm package, MIT                                                                   | TypeScript, Apache-2.0                                            | TypeScript, Apache-2.0                                                |
+| Stars that day            | 0                                                                                   | 3                                                                                  | not stated                                                        | n/a                                                                   |
+| Upstream transports       | stdio, Streamable HTTP                                                              | not stated                                                                         | stdio only                                                        | stdio, Streamable HTTP                                                |
+| Several upstreams         | yes                                                                                 | yes, by URL path                                                                   | yes                                                               | yes, namespaced tool names                                            |
+| Identity                  | bearer token per request (HTTP), fixed at launch (stdio)                            | "per-agent" RBAC; how identity is established is not stated                        | none for agents                                                   | bearer token per request (HTTP), fixed at launch (stdio)              |
+| Policy                    | YAML, default deny, first match wins                                                | YAML; modes default-deny, allowlist, audit; starts in audit mode                   | YAML, default deny, first match wins                              | YAML, default deny only, deny overrides allow (order does not matter) |
+| Argument constraints      | yes (`when:` blocks)                                                                | yes (patterns, JSON Schema)                                                        | path, command, host matching                                      | yes (`when:` list, fail closed on missing values)                     |
+| Require approval          | not stated                                                                          | not stated                                                                         | yes                                                               | yes (CLI prompt, webhook)                                             |
+| Limits                    | token buckets                                                                       | per minute                                                                         | not stated                                                        | per minute and per session                                            |
+| Filtered tool list        | yes                                                                                 | not stated                                                                         | quarantined tools hidden                                          | yes                                                                   |
+| Audit                     | JSONL, hash-chained                                                                 | signed log                                                                         | SQLite, hash-chained                                              | JSONL plus OpenTelemetry spans                                        |
+| Offline use of the policy | `validate`, `explain`, dry-run                                                      | policy test files, `simulate`, `fuzz`, a GitHub Action that simulates sample calls | `replay` of one past event                                        | `check` over recorded sessions, policy test files, GitHub Action      |
+| Injection numbers         | none ("not a prompt-injection detector")                                            | none (latency numbers only)                                                        | none                                                              | with/without table from a script                                      |
 
 Notes on these three:
 
@@ -62,12 +62,12 @@ Notes on these three:
 
 ## Large gateways
 
-| | What it is | Authorization | Size signal |
-|---|---|---|---|
-| [agentgateway](https://github.com/agentgateway/agentgateway) (Apache-2.0, 6.1k stars) | Rust proxy for agent-to-tool, agent-to-LLM and agent-to-agent traffic | CEL policies; JWT, API key, OAuth identity; rate limiting; OpenTelemetry. Version 1.3 added `mcpGuardrails`, a hook that sends each MCP method call to an external gRPC policy server | Data plane plus Kubernetes controller and UI |
-| [IBM ContextForge](https://github.com/IBM/mcp-context-forge) (Apache-2.0, 4.8k stars) | Python registry and gateway that federates MCP, A2A and REST | RBAC (format not stated), JWT and SSO identity, rate limiting, OpenTelemetry | 40+ plugins, admin UI, Postgres and Redis stack |
-| [Docker MCP Gateway](https://github.com/docker/mcp-gateway) (MIT, 1.6k stars) | Go CLI plugin that runs MCP servers in containers behind one gateway | Per-profile tool allowlists; no policy language; agent identity not stated | Container lifecycle, catalog, secrets |
-| [GitHub Agentic Workflows MCP Gateway](https://github.com/github/gh-aw-mcpg) (MIT, 188 stars) | Go gateway for sandboxed agents in GitHub workflows | Guard policies on repository and integrity level, per-session tool call limits, OTLP tracing | WASM guard runtime, GitHub API proxy |
+|                                                                                               | What it is                                                            | Authorization                                                                                                                                                                         | Size signal                                     |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| [agentgateway](https://github.com/agentgateway/agentgateway) (Apache-2.0, 6.1k stars)         | Rust proxy for agent-to-tool, agent-to-LLM and agent-to-agent traffic | CEL policies; JWT, API key, OAuth identity; rate limiting; OpenTelemetry. Version 1.3 added `mcpGuardrails`, a hook that sends each MCP method call to an external gRPC policy server | Data plane plus Kubernetes controller and UI    |
+| [IBM ContextForge](https://github.com/IBM/mcp-context-forge) (Apache-2.0, 4.8k stars)         | Python registry and gateway that federates MCP, A2A and REST          | RBAC (format not stated), JWT and SSO identity, rate limiting, OpenTelemetry                                                                                                          | 40+ plugins, admin UI, Postgres and Redis stack |
+| [Docker MCP Gateway](https://github.com/docker/mcp-gateway) (MIT, 1.6k stars)                 | Go CLI plugin that runs MCP servers in containers behind one gateway  | Per-profile tool allowlists; no policy language; agent identity not stated                                                                                                            | Container lifecycle, catalog, secrets           |
+| [GitHub Agentic Workflows MCP Gateway](https://github.com/github/gh-aw-mcpg) (MIT, 188 stars) | Go gateway for sandboxed agents in GitHub workflows                   | Guard policies on repository and integrity level, per-session tool call limits, OTLP tracing                                                                                          | WASM guard runtime, GitHub API proxy            |
 
 None of the four pages describes a command that checks recorded sessions
 against the policy in CI, policy test files, or published injection numbers.

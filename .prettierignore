@@ -1,0 +1,5 @@
+docs/superpowers
+dist
+node_modules
+eval/transcripts
+package-lock.json

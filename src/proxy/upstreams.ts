@@ -1,0 +1,141 @@
+import { createRequire } from 'node:module';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  type CallToolResult,
+  type Tool,
+  type Transport,
+} from '@modelcontextprotocol/client';
+import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { SERVER_NAME } from './names.js';
+
+const { version } = createRequire(import.meta.url)('../../package.json') as { version: string };
+
+export type UpstreamSpec =
+  | {
+      name: string;
+      transport: 'stdio';
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      cwd?: string;
+    }
+  | { name: string; transport: 'http'; url: string; headers?: Record<string, string> }
+  | { name: string; transport: 'custom'; connect: () => Transport | Promise<Transport> };
+
+export interface UpstreamTool {
+  server: string;
+  tool: Tool;
+}
+
+interface ConnectOptions {
+  onError?: (server: string, error: Error) => void;
+}
+
+function toError(e: unknown): Error {
+  return e instanceof Error ? e : new Error(String(e));
+}
+
+async function openTransport(spec: UpstreamSpec): Promise<Transport> {
+  switch (spec.transport) {
+    case 'stdio':
+      return new StdioClientTransport({
+        command: spec.command,
+        ...(spec.args && { args: spec.args }),
+        // The SDK uses `env` as the whole environment; merge so PATH and friends survive.
+        ...(spec.env && { env: { ...getDefaultEnvironment(), ...spec.env } }),
+        ...(spec.cwd !== undefined && { cwd: spec.cwd }),
+      });
+    case 'http':
+      return new StreamableHTTPClientTransport(
+        new URL(spec.url),
+        spec.headers ? { requestInit: { headers: spec.headers } } : undefined,
+      );
+    case 'custom':
+      return spec.connect();
+  }
+}
+
+async function connectOne(spec: UpstreamSpec): Promise<Client> {
+  const client = new Client(
+    { name: 'mcp-policy-proxy', version },
+    { versionNegotiation: { mode: 'auto' } },
+  );
+  await client.connect(await openTransport(spec));
+  return client;
+}
+
+export class Upstreams {
+  private constructor(
+    private readonly clients: Map<string, Client>,
+    private readonly onError: ConnectOptions['onError'],
+  ) {}
+
+  static async connect(specs: UpstreamSpec[], opts: ConnectOptions = {}): Promise<Upstreams> {
+    const seen = new Set<string>();
+    for (const { name } of specs) {
+      if (!SERVER_NAME.test(name)) {
+        throw new Error(`Invalid upstream name "${name}": must match ${SERVER_NAME}`);
+      }
+      if (seen.has(name)) throw new Error(`Duplicate upstream name "${name}"`);
+      seen.add(name);
+    }
+
+    const results = await Promise.allSettled(specs.map(connectOne));
+    const clients = new Map<string, Client>();
+    const failures: string[] = [];
+    results.forEach((result, i) => {
+      const name = specs[i]!.name;
+      if (result.status === 'fulfilled') clients.set(name, result.value);
+      else failures.push(`${name}: ${toError(result.reason).message}`);
+    });
+    if (failures.length > 0) {
+      await Promise.allSettled([...clients.values()].map((c) => c.close()));
+      throw new Error(`Failed to connect upstream ${failures.join('; ')}`);
+    }
+    return new Upstreams(clients, opts.onError);
+  }
+
+  names(): string[] {
+    return [...this.clients.keys()];
+  }
+
+  has(server: string): boolean {
+    return this.clients.has(server);
+  }
+
+  async listTools(): Promise<UpstreamTool[]> {
+    const perServer = await Promise.all(
+      [...this.clients].map(async ([server, client]) => {
+        try {
+          const tools: UpstreamTool[] = [];
+          let cursor: string | undefined;
+          do {
+            const page = await client.listTools(cursor === undefined ? undefined : { cursor });
+            for (const tool of page.tools) tools.push({ server, tool });
+            cursor = page.nextCursor;
+          } while (cursor !== undefined);
+          return tools;
+        } catch (e) {
+          this.onError?.(server, toError(e));
+          return [];
+        }
+      }),
+    );
+    return perServer.flat();
+  }
+
+  async callTool(
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<CallToolResult> {
+    const client = this.clients.get(server);
+    if (!client) throw new Error(`Unknown upstream "${server}"`);
+    return client.callTool({ name: tool, arguments: args });
+  }
+
+  async close(): Promise<void> {
+    await Promise.allSettled([...this.clients.values()].map((c) => c.close()));
+  }
+}
