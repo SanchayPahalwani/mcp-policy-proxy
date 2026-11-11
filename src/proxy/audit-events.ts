@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { ProtocolError } from '@modelcontextprotocol/server';
-import type { ApprovalOutcome, ApprovalResult } from '../approval/types.js';
-import type { DecisionEvent, ListEvent, OutcomeEvent } from '../audit/log.js';
+import type { ApprovalResult } from '../approval/types.js';
+import type { ApprovalOutcome } from '../approval/wait.js';
+import type { AuditEvent, DecisionEvent, ListEvent, OutcomeEvent } from '../audit/log.js';
 import { redact } from '../audit/redact.js';
 import type { Call, Decision } from '../policy/engine.js';
 import type { Policy } from '../policy/load.js';
@@ -160,6 +162,41 @@ export function internalErrorEvent(
     forwarded: false,
     policy_sha256: policy.sha256,
   };
+}
+
+/** How far one call got, so a refusal caused by a throw can still be logged truthfully. */
+export interface CallProgress {
+  callId?: string;
+  decisionWritten: boolean;
+  forwardedWritten: boolean;
+}
+
+/**
+ * The event still owed for a call that ended in a throw: a refusal if no decision was
+ * written, a failed outcome if the call was cleared, and nothing if the refusal is logged.
+ */
+export function failureEvent(
+  policy: Policy,
+  caller: Caller,
+  target: { server: string; tool: string },
+  progress: CallProgress,
+  clock: () => number,
+): AuditEvent | undefined {
+  let now: number;
+  try {
+    now = clock();
+  } catch {
+    // The clock may be what threw; the event is worth more than its timestamp.
+    now = Date.now();
+  }
+  const callId = progress.callId ?? randomUUID();
+  if (!progress.decisionWritten) return internalErrorEvent(policy, caller, target, callId, now);
+  if (!progress.forwardedWritten) return undefined;
+  return outcomeEvent(policy, callId, now, now, {
+    ok: false,
+    isError: false,
+    error: 'internal_error',
+  });
 }
 
 export function listEvent(policy: Policy, caller: Caller, now: number, names: string[]): ListEvent {

@@ -1,5 +1,6 @@
 export * from './approval/cli.js';
 export * from './approval/types.js';
+export * from './approval/wait.js';
 export * from './approval/webhook.js';
 export * from './audit/log.js';
 export * from './audit/redact.js';

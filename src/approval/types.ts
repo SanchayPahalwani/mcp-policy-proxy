@@ -22,14 +22,6 @@ export interface Approver {
   request(pending: PendingApproval, signal: AbortSignal): Promise<ApprovalResult>;
 }
 
-/** How the wait for an approver ended, as the gate sees it. */
-export type ApprovalOutcome =
-  | { kind: 'approved'; result: ApprovalResult }
-  | { kind: 'refused'; result: ApprovalResult }
-  | { kind: 'timeout'; timeoutMs: number }
-  | { kind: 'error'; error: unknown }
-  | { kind: 'cancelled' };
-
 export const denyApprover: Approver = {
   request: async () => ({ approved: false, note: 'no approver configured' }),
 };

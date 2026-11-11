@@ -4,12 +4,8 @@ import {
   ProtocolErrorCode,
   type CallToolResult,
 } from '@modelcontextprotocol/server';
-import {
-  denyApprover,
-  type ApprovalOutcome,
-  type Approver,
-  type PendingApproval,
-} from '../approval/types.js';
+import { denyApprover, type Approver, type PendingApproval } from '../approval/types.js';
+import { awaitApproval, type ApprovalOutcome } from '../approval/wait.js';
 import type { AuditEvent, AuditSink } from '../audit/log.js';
 import { redact } from '../audit/redact.js';
 import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
@@ -19,11 +15,12 @@ import {
   CLIENT_CANCELLED,
   decisionEvent,
   errorLabel,
-  internalErrorEvent,
+  failureEvent,
   iso,
   listEvent,
   outcomeEvent,
   refusal,
+  type CallProgress,
 } from './audit-events.js';
 import { deniedResult, toolNotFound, type Caller, type Gate } from './gate.js';
 import { joinName } from './names.js';
@@ -46,59 +43,10 @@ function upstreamError(message: string): CallToolResult {
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/**
- * Asks the approver, but never waits longer than `timeoutMs` or past the client giving up:
- * an approver that ignores the abort signal is left behind, and its late answer is dropped.
- */
-async function awaitApproval(
-  approver: Approver,
-  pending: PendingApproval,
-  timeoutMs: number,
-  clientSignal: AbortSignal | undefined,
-): Promise<ApprovalOutcome> {
-  const controller = new AbortController();
-  let timer: NodeJS.Timeout | undefined;
-  let onClientAbort: (() => void) | undefined;
-  // Each stop is settled before aborting, so an approver that rejects on abort cannot win.
-  const stopped = new Promise<ApprovalOutcome>((resolve) => {
-    timer = setTimeout(() => {
-      resolve({ kind: 'timeout', timeoutMs });
-      controller.abort(new Error('approval timed out'));
-    }, timeoutMs);
-    onClientAbort = () => {
-      resolve({ kind: 'cancelled' });
-      controller.abort(new Error('the client gave up'));
-    };
-    if (clientSignal?.aborted) onClientAbort();
-    else clientSignal?.addEventListener('abort', onClientAbort, { once: true });
-  });
-  const answer = (async (): Promise<ApprovalOutcome> => {
-    try {
-      const result = await approver.request(pending, controller.signal);
-      return result.approved === true ? { kind: 'approved', result } : { kind: 'refused', result };
-    } catch (error) {
-      return { kind: 'error', error };
-    }
-  })();
-  try {
-    return await Promise.race([answer, stopped]);
-  } finally {
-    clearTimeout(timer);
-    if (onClientAbort) clientSignal?.removeEventListener('abort', onClientAbort);
-  }
-}
-
 type Admission =
   | { kind: 'forward'; callId: string }
   | { kind: 'refuse'; result: CallToolResult }
   | { kind: 'hidden' };
-
-/** How far one call got, so a refusal caused by a throw can still be logged truthfully. */
-interface Trace {
-  callId?: string;
-  decisionWritten: boolean;
-  forwardedWritten: boolean;
-}
 
 const isThenable = (value: unknown): value is PromiseLike<unknown> =>
   typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
@@ -125,9 +73,10 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   };
 
   // For events whose loss must not change the answer: the call was refused or already made.
-  const record = (build: () => AuditEvent): void => {
+  const record = (build: () => AuditEvent | undefined): void => {
     try {
-      write(build());
+      const event = build();
+      if (event) write(event);
     } catch (e) {
       console.error('mcp-policy-proxy: audit write failed', e);
     }
@@ -138,7 +87,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const admit = (
     call: Call,
     callId: string,
-    trace: Trace,
+    progress: CallProgress,
     decision: Decision,
     signal: AbortSignal | undefined,
     approval?: ApprovalOutcome,
@@ -155,7 +104,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     const event = decisionEvent(policy, call, callId, decision, refused, approval);
     if (refused) {
       record(() => event);
-      trace.decisionWritten = true;
+      progress.decisionWritten = true;
       if (!decision.visible) return { kind: 'hidden' };
       return { kind: 'refuse', result: deniedResult(refused.code, refused.reason) };
     }
@@ -168,8 +117,8 @@ export function policyGate(deps: PolicyGateDeps): Gate {
         result: deniedResult('audit_failed', 'the decision could not be recorded'),
       };
     }
-    trace.decisionWritten = true;
-    trace.forwardedWritten = true;
+    progress.decisionWritten = true;
+    progress.forwardedWritten = true;
     commit(state, call, decision);
     return { kind: 'forward', callId };
   };
@@ -190,7 +139,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const admitAnswered = (
     call: Call,
     callId: string,
-    trace: Trace,
+    progress: CallProgress,
     decision: Decision,
     signal: AbortSignal | undefined,
     outcome: ApprovalOutcome,
@@ -198,38 +147,10 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     if (outcome.kind === 'error') console.error('mcp-policy-proxy: approver failed', outcome.error);
     const answered: Call = { ...call, at: clock() };
     if (outcome.kind !== 'approved' || signal?.aborted) {
-      return admit(answered, callId, trace, decision, signal, outcome);
+      return admit(answered, callId, progress, decision, signal, outcome);
     }
     // Decided again: other calls may have used up a limit while this one waited.
-    return admit(answered, callId, trace, decide(policy, state, answered), signal, outcome);
-  };
-
-  // Best effort, after a throw: the log should still show that this call was refused.
-  const recordFailure = (
-    caller: Caller,
-    target: { server: string; tool: string },
-    trace: Trace,
-  ) => {
-    const now = () => {
-      try {
-        return clock();
-      } catch {
-        return Date.now();
-      }
-    };
-    const callId = trace.callId ?? randomUUID();
-    if (!trace.decisionWritten) {
-      record(() => internalErrorEvent(policy, caller, target, callId, now()));
-    } else if (trace.forwardedWritten) {
-      const at = now();
-      record(() =>
-        outcomeEvent(policy, callId, at, at, {
-          ok: false,
-          isError: false,
-          error: 'internal_error',
-        }),
-      );
-    }
+    return admit(answered, callId, progress, decide(policy, state, answered), signal, outcome);
   };
 
   const forwardAndRecord = async (
@@ -279,28 +200,29 @@ export function policyGate(deps: PolicyGateDeps): Gate {
 
     async callTool(caller, { server, tool, args }, forward, opts) {
       const signal = opts?.signal;
-      const trace: Trace = { decisionWritten: false, forwardedWritten: false };
+      const progress: CallProgress = { decisionWritten: false, forwardedWritten: false };
       let admission: Admission;
       let startedAt = 0;
       try {
         const callId = newId();
-        trace.callId = callId;
+        progress.callId = callId;
         const { identity, session } = caller;
         const call: Call = { identity, session, server, tool, args, at: clock() };
         const decision = decide(policy, state, call);
         if (decision.effect === 'require_approval' && decision.visible) {
           const pending = pendingApproval(call, callId, decision);
           const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
-          admission = admitAnswered(call, callId, trace, decision, signal, outcome);
+          admission = admitAnswered(call, callId, progress, decision, signal, outcome);
         } else {
-          admission = admit(call, callId, trace, decision, signal);
+          admission = admit(call, callId, progress, decision, signal);
         }
         // Read after the audit write, so the duration is the upstream's alone.
         if (admission.kind === 'forward') startedAt = clock();
       } catch (e) {
         // Fail closed: a bug in evaluation must never turn into an allow.
         console.error('mcp-policy-proxy: policy evaluation failed', e);
-        recordFailure(caller, { server, tool }, trace);
+        // Best effort: the log should still show that this call was refused.
+        record(() => failureEvent(policy, caller, { server, tool }, progress, clock));
         return deniedResult('internal_error', 'policy evaluation failed');
       }
       // Hidden tools answer exactly like missing ones, so a caller cannot probe the policy.
