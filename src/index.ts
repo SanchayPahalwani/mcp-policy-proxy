@@ -21,5 +21,8 @@ export * from './policy/schema.js';
 export * from './policy/engine.js';
 export * from './policy/limits.js';
 export * from './policy/lint.js';
+export * from './check/check.js';
 export * from './check/policy-tests.js';
+export * from './check/report.js';
+export * from './check/sessions.js';
 export * from './config.js';

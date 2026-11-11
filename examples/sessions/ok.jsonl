@@ -1,0 +1,6 @@
+{"ts":"2026-01-15T09:00:00Z","session":"writer-ok","identity":"writer","server":"docs","tool":"list_drafts"}
+{"ts":"2026-01-15T09:00:05Z","session":"writer-ok","identity":"writer","server":"docs","tool":"get_draft","args":{"id":"d1"}}
+{"ts":"2026-01-15T09:00:20Z","session":"writer-ok","identity":"writer","server":"docs","tool":"create_draft","args":{"title":"Release notes","body":"First pass."}}
+{"ts":"2026-01-15T09:01:10Z","session":"writer-ok","identity":"writer","server":"docs","tool":"update_draft","args":{"id":"d2","title":"Release notes v2"}}
+{"ts":"2026-01-15T09:02:00Z","session":"writer-ok","identity":"writer","server":"web","tool":"fetch_page","args":{"url":"https://docs.example.test/guide"}}
+{"ts":"2026-01-15T09:03:00Z","session":"writer-ok","identity":"writer","server":"mail","tool":"send","args":{"to":"team@example.test","subject":"Draft ready"}}
