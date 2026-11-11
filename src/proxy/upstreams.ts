@@ -65,6 +65,16 @@ async function connectOne(spec: UpstreamSpec): Promise<Client> {
   return client;
 }
 
+/** Which upstreams failed to connect, so a caller can report them without their messages. */
+export class UpstreamConnectError extends Error {
+  constructor(readonly failures: { name: string; error: Error }[]) {
+    super(
+      `Failed to connect upstream ${failures.map((f) => `${f.name}: ${f.error.message}`).join('; ')}`,
+    );
+    this.name = 'UpstreamConnectError';
+  }
+}
+
 export class Upstreams {
   private constructor(
     private readonly clients: Map<string, Client>,
@@ -83,15 +93,15 @@ export class Upstreams {
 
     const results = await Promise.allSettled(specs.map(connectOne));
     const clients = new Map<string, Client>();
-    const failures: string[] = [];
+    const failures: { name: string; error: Error }[] = [];
     results.forEach((result, i) => {
       const name = specs[i]!.name;
       if (result.status === 'fulfilled') clients.set(name, result.value);
-      else failures.push(`${name}: ${toError(result.reason).message}`);
+      else failures.push({ name, error: toError(result.reason) });
     });
     if (failures.length > 0) {
       await Promise.allSettled([...clients.values()].map((c) => c.close()));
-      throw new Error(`Failed to connect upstream ${failures.join('; ')}`);
+      throw new UpstreamConnectError(failures);
     }
     return new Upstreams(clients, opts.onError);
   }

@@ -1,14 +1,14 @@
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parse, stringify } from 'yaml';
 import { main } from '../src/cli.js';
 import { loadConfig } from '../src/config/schema.js';
 import { startFromConfig } from '../src/config/start.js';
+import { descendants, until } from './helpers/processes.js';
 import { call, connectAgent, textOf } from './helpers/proxy-client.js';
 
 const EXAMPLES = fileURLToPath(new URL('../examples/', import.meta.url));
@@ -20,35 +20,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** Command lines of this process's descendants that run an eval mock server. */
-function mockServers(): string[] {
-  const rows = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' })
-    .split('\n')
-    .map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line))
-    .filter((m) => m !== null)
-    .map(([, pid, ppid, command]) => ({ pid: Number(pid), ppid: Number(ppid), command: command! }));
-  const mine = new Set([process.pid]);
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const row of rows) {
-      if (mine.has(row.ppid) && !mine.has(row.pid)) {
-        mine.add(row.pid);
-        grew = true;
-      }
-    }
-  }
-  return rows
-    .filter((r) => mine.has(r.pid) && r.command.includes('eval/servers/stdio.ts'))
-    .map((r) => r.command);
-}
-
-async function until(check: () => boolean, ms = 5_000): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() > deadline) throw new Error('condition not reached in time');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
+const mockServers = () => descendants('eval/servers/stdio.ts');
 
 function sink(): { stream: Writable; text: () => string } {
   let text = '';
@@ -118,6 +90,53 @@ describe('serve', () => {
     await running.close();
     closed = true;
     await until(() => mockServers().length === 0);
+  });
+});
+
+describe('serve signals', () => {
+  it('stops cleanly when a signal arrives while it is still starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-policy-signal-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, 'proxy.config.yaml');
+    writeFileSync(
+      file,
+      stringify({
+        listen: { transport: 'http', port: 0 },
+        identities: [
+          { name: 'writer', token_env: 'WRITER_TOKEN' },
+          { name: 'release-manager', token_env: 'RELEASE_MANAGER_TOKEN' },
+        ],
+        upstreams: {
+          docs: {
+            transport: 'stdio',
+            command: process.execPath,
+            args: [
+              '--import',
+              'tsx',
+              fileURLToPath(new URL('./helpers/stdio-server.ts', import.meta.url)),
+            ],
+            cwd: fileURLToPath(new URL('..', import.meta.url)),
+          },
+        },
+        policy: join(EXAMPLES, 'policy.yaml'),
+        audit: { path: './audit.jsonl' },
+        approval: { type: 'deny' },
+      }),
+    );
+    vi.stubEnv('WRITER_TOKEN', 'tok-writer');
+    vi.stubEnv('RELEASE_MANAGER_TOKEN', 'tok-release');
+    cleanups.push(() => void vi.unstubAllEnvs());
+    const listeners = process.listenerCount('SIGINT');
+    const stderr = sink();
+    const exit = main(['serve', '--config', file], {
+      stdout: sink().stream,
+      stderr: stderr.stream,
+    });
+    process.emit('SIGINT', 'SIGINT');
+    expect(await exit).toBe(0);
+    expect(stderr.text()).toContain('listening on');
+    expect(process.listenerCount('SIGINT')).toBe(listeners);
+    await until(() => descendants('helpers/stdio-server.ts').length === 0);
   });
 });
 

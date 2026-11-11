@@ -11,10 +11,17 @@ import { messageOf } from '../util.js';
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const envName = z.string().regex(ENV_NAME, `must be an environment variable name`);
 
+// Exactly the names the SDK's Host/Origin guards accept; any other host turns them off.
+export const LOOPBACK_HOSTS: readonly string[] = ['127.0.0.1', 'localhost', '::1'];
+
+// Only web URLs: a `file:` or `data:` URL would never be what an operator meant.
+const webUrl = z.url({ protocol: /^https?$/, error: 'must be an http: or https: URL' });
+
 const listenSchema = z.discriminatedUnion('transport', [
   z.strictObject({
     transport: z.literal('http'),
     host: z.string().min(1).default('127.0.0.1'),
+    allow_non_loopback: z.boolean().default(false),
     port: z.number().int().min(0).max(65_535).default(8787),
     path: z.string().startsWith('/').default('/mcp'),
     session_header: z.string().min(1).default('x-agent-session'),
@@ -41,24 +48,34 @@ const upstreamSchema = z.discriminatedUnion('transport', [
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
     cwd: z.string().min(1).optional(),
+    /** Proxy environment variables handed to the child, which otherwise gets the SDK's minimal set. */
+    pass_env: z.array(envName).optional(),
   }),
   z.strictObject({
     transport: z.literal('http'),
-    url: z.url(),
+    url: webUrl,
     /** Header name to the variable holding its value, so credentials stay out of the file. */
     headers_env: z.record(z.string().min(1), envName).optional(),
   }),
 ]);
 
 // Under the MCP SDK client's default 60 s request timeout, so the agent hears the refusal.
-const timeoutSeconds = z.number().positive().default(55);
+// The cap is the gate's: a timer longer than 2^31-1 ms would fire at once.
+const MAX_TIMEOUT_SECONDS = 2_147_483;
+const timeoutSeconds = z
+  .number()
+  .positive({ error: 'approval.timeout_seconds must be a positive number' })
+  .max(MAX_TIMEOUT_SECONDS, {
+    error: `approval.timeout_seconds must be at most ${MAX_TIMEOUT_SECONDS}`,
+  })
+  .default(55);
 
 const approvalSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('cli'), timeout_seconds: timeoutSeconds }),
   z.strictObject({ type: z.literal('deny'), timeout_seconds: timeoutSeconds }),
   z.strictObject({
     type: z.literal('webhook'),
-    url: z.url(),
+    url: webUrl,
     secret_env: envName,
     timeout_seconds: timeoutSeconds,
   }),
@@ -69,10 +86,12 @@ const configSchema = z
     listen: listenSchema,
     identities: z.array(identitySchema).min(1, 'at least one identity is needed'),
     stdio_identity: z.string().optional(),
-    upstreams: z.record(
-      z.string().regex(SERVER_NAME, `upstream names must match ${SERVER_NAME}`),
-      upstreamSchema,
-    ),
+    upstreams: z
+      .record(
+        z.string().regex(SERVER_NAME, `upstream names must match ${SERVER_NAME}`),
+        upstreamSchema,
+      )
+      .refine((u) => Object.keys(u).length > 0, { error: 'at least one upstream is needed' }),
     policy: z.string().min(1),
     audit: z.strictObject({ path: z.string().min(1) }),
     approval: approvalSchema.default({ type: 'deny', timeout_seconds: 55 }),
@@ -84,7 +103,24 @@ const configSchema = z
         ctx.addIssue({ code: 'custom', path: ['identities', i], message: 'duplicate name' });
       }
     });
-    if (c.listen.transport !== 'stdio') return;
+    if (c.listen.transport === 'http') {
+      if (c.stdio_identity !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['stdio_identity'],
+          message:
+            'only used when listen.transport is stdio; HTTP callers are named by their token',
+        });
+      }
+      if (!LOOPBACK_HOSTS.includes(c.listen.host) && !c.listen.allow_non_loopback) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['listen', 'host'],
+          message: `"${c.listen.host}" is not a loopback address; set listen.allow_non_loopback: true to listen on it`,
+        });
+      }
+      return;
+    }
     if (c.stdio_identity === undefined) {
       ctx.addIssue({
         code: 'custom',

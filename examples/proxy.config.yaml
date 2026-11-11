@@ -3,6 +3,7 @@
 # Relative paths are read from this file's directory.
 
 # Where agents connect. transport: http | stdio. Agents name their session in session_header.
+# host must be a loopback name unless allow_non_loopback: true is set; then put TLS in front.
 listen:
   { transport: http, host: 127.0.0.1, port: 8787, path: /mcp, session_header: x-agent-session }
 
@@ -15,10 +16,12 @@ identities:
 # stdio_identity: writer            # required when listen.transport is stdio
 
 # The MCP servers behind the proxy. Their tools are listed to agents as <name>__<tool>.
+# A stdio child gets only a minimal environment; pass_env names proxy variables to hand it.
 upstreams:
   docs: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, docs] }
   web: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, web] }
   mail: { transport: stdio, command: npx, args: [tsx, ../eval/servers/stdio.ts, mail] }
+  # search: { transport: stdio, command: search-mcp, pass_env: [SEARCH_API_KEY] }
   # other: { transport: http, url: http://127.0.0.1:9001/mcp, headers_env: { Authorization: OTHER_UPSTREAM_AUTH } }
 
 # The rules every call is checked against.

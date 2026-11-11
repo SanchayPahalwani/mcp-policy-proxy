@@ -149,6 +149,59 @@ describe('loadConfig', () => {
     expect(neither.issues.join('\n')).toContain('exactly one of token_sha256 or token_env');
   });
 
+  it('refuses a host beyond loopback unless allow_non_loopback is set', () => {
+    const error = loadError(configFile((c) => (c['listen'].host = '0.0.0.0')));
+    expect(error.issues.join('\n')).toContain('listen.allow_non_loopback');
+    const allowed = loadConfig(
+      configFile((c) => {
+        c['listen'].host = '0.0.0.0';
+        c['listen'].allow_non_loopback = true;
+      }),
+    );
+    expect(allowed.listen).toMatchObject({ host: '0.0.0.0', allow_non_loopback: true });
+    for (const host of ['127.0.0.1', 'localhost', '::1']) {
+      expect(() => loadConfig(configFile((c) => (c['listen'].host = host)))).not.toThrow();
+    }
+  });
+
+  it('accepts only http: and https: URLs for upstreams and webhooks', () => {
+    expect(
+      loadError(configFile((c) => (c['upstreams'].docs.url = 'file:///etc/passwd'))).issues.join(
+        '\n',
+      ),
+    ).toContain('upstreams.docs.url');
+    expect(
+      loadError(
+        configFile((c) => {
+          c['approval'] = { type: 'webhook', url: 'ftp://127.0.0.1/', secret_env: 'HOOK' };
+        }),
+      ).issues.join('\n'),
+    ).toContain('approval.url');
+    expect(() =>
+      loadConfig(configFile((c) => (c['upstreams'].docs.url = 'https://127.0.0.1/mcp'))),
+    ).not.toThrow();
+  });
+
+  it('rejects stdio_identity with an HTTP listener, and a config with no upstreams', () => {
+    expect(
+      loadError(configFile((c) => (c['stdio_identity'] = 'writer'))).issues.join('\n'),
+    ).toContain('stdio_identity');
+    expect(loadError(configFile((c) => (c['upstreams'] = {}))).issues.join('\n')).toContain(
+      'at least one upstream',
+    );
+  });
+
+  it('bounds approval.timeout_seconds to what a timer can hold', () => {
+    const error = loadError(
+      configFile((c) => (c['approval'] = { type: 'deny', timeout_seconds: 3_000_000 })),
+    );
+    expect(error.issues.join('\n')).toContain('approval.timeout_seconds must be at most 2147483');
+    expect(
+      loadConfig(configFile((c) => (c['approval'] = { type: 'deny', timeout_seconds: 2_147_483 })))
+        .approval.timeout_seconds,
+    ).toBe(2_147_483);
+  });
+
   it('reports a file that is not YAML', () => {
     const path = join(tempDir(), 'broken.yaml');
     writeFileSync(path, 'listen: [');
@@ -178,10 +231,18 @@ describe('startFromConfig', () => {
   });
 
   it('names an unset or empty token variable without printing any token', async () => {
-    const config = loadConfig(configFile());
-    for (const env of [{}, { WRITER_TOKEN: '' }]) {
+    const config = loadConfig(
+      configFile((c) => c['identities'].push({ name: 'editor', token_env: 'EDITOR_TOKEN' })),
+    );
+    for (const env of [
+      { EDITOR_TOKEN: 'TOKEN-MARK' },
+      { WRITER_TOKEN: '', EDITOR_TOKEN: 'TOKEN-MARK' },
+    ]) {
       const error = await startError(config, env);
-      expect(error.message).toContain('WRITER_TOKEN');
+      expect(error.issues).toEqual([
+        'identity "writer": environment variable WRITER_TOKEN is not set',
+      ]);
+      expect(error.message).not.toContain('TOKEN-MARK');
     }
   });
 
@@ -229,7 +290,10 @@ describe('startFromConfig', () => {
       env: { WRITER_TOKEN: 'tok-a' },
       log: (line) => lines.push(line),
     }).then(
-      () => undefined,
+      async (running) => {
+        await running.close();
+        return undefined;
+      },
       (e: unknown) => e as PolicyError,
     );
     expect(error).toBeInstanceOf(PolicyError);
