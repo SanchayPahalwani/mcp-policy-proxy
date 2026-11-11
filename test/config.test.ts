@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
-import { loadConfig, startFromConfig, type ProxyConfig } from '../src/config.js';
+import { loadConfig, type ProxyConfig } from '../src/config/schema.js';
+import { startFromConfig } from '../src/config/start.js';
 import { PolicyError } from '../src/policy/load.js';
 
 const EXAMPLES = fileURLToPath(new URL('../examples/', import.meta.url)).replace(/\/$/, '');

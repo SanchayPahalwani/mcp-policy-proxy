@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse, stringify } from 'yaml';
 import { main } from '../src/cli.js';
-import { loadConfig, startFromConfig } from '../src/config.js';
+import { loadConfig } from '../src/config/schema.js';
+import { startFromConfig } from '../src/config/start.js';
 import { call, connectAgent, textOf } from './helpers/proxy-client.js';
 
 const EXAMPLES = fileURLToPath(new URL('../examples/', import.meta.url));

@@ -12,6 +12,7 @@ import { redact } from '../audit/redact.js';
 import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
 import { LimitState, type Clock } from '../policy/limits.js';
 import type { Policy } from '../policy/load.js';
+import { messageOf } from '../util.js';
 import {
   CLIENT_CANCELLED,
   decisionEvent,
@@ -42,8 +43,6 @@ export interface PolicyGateDeps {
 function upstreamError(message: string): CallToolResult {
   return { isError: true, content: [{ type: 'text', text: `Upstream error: ${message}` }] };
 }
-
-const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** `code` and `rule` are the call's final label, as its decision event records it. */
 type Admission = (

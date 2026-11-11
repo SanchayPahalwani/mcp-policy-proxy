@@ -25,4 +25,5 @@ export * from './check/check.js';
 export * from './check/policy-tests.js';
 export * from './check/report.js';
 export * from './check/sessions.js';
-export * from './config.js';
+export * from './config/schema.js';
+export * from './config/start.js';
