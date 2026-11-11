@@ -107,15 +107,13 @@ export class Upstreams {
   async listTools(): Promise<UpstreamTool[]> {
     const perServer = await Promise.all(
       [...this.clients].map(async ([server, client]) => {
+        // The SDK logs a console.debug line to stdout when listing tools on a server without
+        // the capability, which would corrupt the protocol channel when we serve over stdio.
+        if (client.getServerCapabilities()?.tools === undefined) return [];
         try {
-          const tools: UpstreamTool[] = [];
-          let cursor: string | undefined;
-          do {
-            const page = await client.listTools(cursor === undefined ? undefined : { cursor });
-            for (const tool of page.tools) tools.push({ server, tool });
-            cursor = page.nextCursor;
-          } while (cursor !== undefined);
-          return tools;
+          // With no cursor the SDK walks every page itself, with a cap on runaway cursors.
+          const { tools } = await client.listTools();
+          return tools.map((tool) => ({ server, tool }));
         } catch (e) {
           this.onError?.(server, toError(e));
           return [];

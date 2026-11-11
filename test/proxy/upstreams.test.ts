@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryTransport, Server } from '@modelcontextprotocol/server';
 import { Upstreams, type UpstreamSpec } from '../../src/proxy/upstreams.js';
 import {
@@ -123,10 +123,60 @@ describe('Upstreams', () => {
     expect(errors[0]?.error).toBeInstanceOf(Error);
   });
 
+  it('skips an upstream without the tools capability', async () => {
+    const spec: UpstreamSpec = {
+      name: 'notools',
+      transport: 'custom',
+      connect: async () => {
+        const server = new Server({ name: 'notools', version: '0.0.0' }, { capabilities: {} });
+        const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+        await server.connect(serverSide);
+        return clientSide;
+      },
+    };
+    const upstreams = await connect([spec, inMemoryUpstream('mem', [{ name: 'a' }])]);
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    cleanups.push(async () => debug.mockRestore());
+
+    expect((await upstreams.listTools()).map((t) => t.server)).toEqual(['mem']);
+    expect(debug).not.toHaveBeenCalled();
+  });
+
+  it('closes connected upstreams when another fails to connect', async () => {
+    let goodClosed = false;
+    const good: UpstreamSpec = {
+      name: 'good',
+      transport: 'custom',
+      connect: async () => {
+        const transport = await (
+          inMemoryUpstream('good', []) as Extract<UpstreamSpec, { transport: 'custom' }>
+        ).connect();
+        const close = transport.close.bind(transport);
+        transport.close = async () => {
+          goodClosed = true;
+          await close();
+        };
+        return transport;
+      },
+    };
+    const bad: UpstreamSpec = {
+      name: 'bad',
+      transport: 'custom',
+      connect: () => {
+        throw new Error('boom');
+      },
+    };
+
+    await expect(Upstreams.connect([good, bad])).rejects.toThrow(
+      'Failed to connect upstream bad: boom',
+    );
+    expect(goodClosed).toBe(true);
+  });
+
   it('rejects duplicate or invalid upstream names', async () => {
     await expect(
       Upstreams.connect([inMemoryUpstream('a', []), inMemoryUpstream('a', [])]),
-    ).rejects.toThrow(/\ba\b/);
+    ).rejects.toThrow('Duplicate upstream name "a"');
     await expect(Upstreams.connect([inMemoryUpstream('Bad_Name', [])])).rejects.toThrow(/Bad_Name/);
   });
 

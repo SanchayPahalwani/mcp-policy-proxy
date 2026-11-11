@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import {
   createMcpHandler,
   InMemoryTransport,
@@ -35,11 +36,11 @@ export function mockServer(name: string, tools: MockTool[], calls?: MockCall[]):
   server.setRequestHandler('tools/call', async (req) => {
     const { name: toolName } = req.params;
     const args = req.params.arguments ?? {};
+    calls?.push({ tool: toolName, args });
     const tool = tools.find((t) => t.name === toolName);
     if (!tool) {
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Tool ${toolName} not found`);
     }
-    calls?.push({ tool: toolName, args });
     if (tool.handler) return tool.handler(args);
     return { content: [{ type: 'text', text: JSON.stringify(args) }] };
   });
@@ -90,6 +91,6 @@ export function stdioUpstream(name: string): UpstreamSpec {
     name,
     transport: 'stdio',
     command: process.execPath,
-    args: ['--import', 'tsx', 'test/helpers/stdio-server.ts'],
+    args: ['--import', 'tsx', fileURLToPath(new URL('./stdio-server.ts', import.meta.url))],
   };
 }
