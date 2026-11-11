@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadPolicy, parsePolicy, PolicyError } from '../../src/policy/load.js';
 import { DEFAULT_REDACT_KEYS } from '../../src/policy/schema.js';
-import { globToRegExp } from '../../src/policy/match.js';
+import { compileGlob, MAX_NAME_LENGTH } from '../../src/policy/match.js';
 
 const EXAMPLE = `
 version: 1
@@ -141,13 +141,44 @@ describe('rule.matches', () => {
   });
 });
 
-describe('globToRegExp', () => {
+describe('compileGlob', () => {
   it('treats everything but * literally and anchors', () => {
-    const re = globToRegExp('a.b*(c)');
-    expect(re.test('a.bXYZ(c)')).toBe(true);
-    expect(re.test('aXbXYZ(c)')).toBe(false);
-    expect(re.test('xa.b(c)')).toBe(false);
-    expect(re.test('a.b(c)x')).toBe(false);
+    const m = compileGlob('a.b*(c)');
+    expect(m('a.bXYZ(c)')).toBe(true);
+    expect(m('a.b(c)')).toBe(true);
+    expect(m('aXbXYZ(c)')).toBe(false);
+    expect(m('xa.b(c)')).toBe(false);
+    expect(m('a.b(c)x')).toBe(false);
+  });
+  it.each([
+    ['*', '', true],
+    ['*', 'anything', true],
+    ['a*b*c', 'aXbYc', true],
+    ['a*b*c', 'abc', true],
+    ['a*b*c', 'acb', false],
+    ['*end', 'the end', true],
+    ['*end', 'ending', false],
+    ['', '', true],
+    ['', 'x', false],
+    ['a**b', 'ab', true],
+    ['get_*', 'forget_x', false],
+  ])('glob %j against %j is %s', (glob, name, expected) => {
+    expect(compileGlob(glob)(name)).toBe(expected);
+  });
+  it('does not blow up on a pathological glob', () => {
+    const start = performance.now();
+    expect(compileGlob('*a*a*a*a*b')('a'.repeat(5000))).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe('tool name length', () => {
+  it('matches no rule above the cap, not even "*"', () => {
+    const policy = parsePolicy(rule({ identities: '*', server: '*', tools: ['*'] }));
+    const r = policy.rules[0]!;
+    expect(MAX_NAME_LENGTH).toBe(256);
+    expect(r.matches('a', 's', 'x'.repeat(256))).toBe(true);
+    expect(r.matches('a', 's', 'x'.repeat(257))).toBe(false);
   });
 });
 
@@ -157,37 +188,69 @@ describe('schema rules', () => {
     ['unknown key in a constraint', rule({ when: [{ arg: 'a', equals: 1, nope: 1 }] }), 'nope'],
     ['unknown key in limits', rule({ limits: { per_hour: 1 } }), 'per_hour'],
     ['bad rule id', rule({ id: 'Bad Id' }), 'must match'],
-    ['empty identities list', rule({ identities: [] }), 'r1'],
-    ['identities not * or a list', rule({ identities: 'writer' }), 'r1'],
-    ['empty tools', rule({ tools: [] }), 'r1'],
-    ['bad server', rule({ server: 'Docs_1' }), 'r1'],
-    ['bad effect', rule({ effect: 'permit' }), 'r1'],
-    ['constraint with no operator', rule({ when: [{ arg: 'a' }] }), 'r1'],
+    ['empty identities list', rule({ identities: [] }), 'non-empty list of names'],
+    ['identities not * or a list', rule({ identities: 'writer' }), 'non-empty list of names'],
+    ['"*" inside identities', rule({ identities: ['*'] }), 'write identities: "*" instead'],
+    ['"*" among other identities', rule({ identities: ['a', '*'] }), 'cannot contain "*"'],
+    ['bad identity name', rule({ identities: ['Bad Name'] }), 'identity "Bad Name" must match'],
+    ['non-string identity', rule({ identities: [5] }), 'identity 5 must match'],
+    ['empty tools', rule({ tools: [] }), 'tools must not be empty'],
+    ['bad server', rule({ server: 'Docs_1' }), 'server must be "*" or match'],
+    ['bad effect', rule({ effect: 'permit' }), 'effect'],
+    ['constraint with no operator', rule({ when: [{ arg: 'a' }] }), 'exactly one of'],
     [
       'constraint with optional but no operator',
       rule({ when: [{ arg: 'a', optional: true }] }),
-      'r1',
+      '(found 0)',
     ],
-    ['constraint with two operators', rule({ when: [{ arg: 'a', min: 1, max: 2 }] }), 'r1'],
-    ['absent with optional', rule({ when: [{ arg: 'a', absent: true, optional: true }] }), 'r1'],
-    ['absent: false', rule({ when: [{ arg: 'a', absent: false }] }), 'r1'],
-    ['empty arg', rule({ when: [{ arg: '', min: 1 }] }), 'r1'],
-    ['matches that does not compile', rule({ when: [{ arg: 'a', matches: '(' }] }), 'r1'],
-    ['deny with when', rule({ effect: 'deny', when: [{ arg: 'a', equals: 1 }] }), 'r1'],
-    ['deny with limits', rule({ effect: 'deny', limits: { per_minute: 1 } }), 'r1'],
-    ['reason on allow', rule({ reason: 'because' }), 'r1'],
-    ['reason on require_approval', rule({ effect: 'require_approval', reason: 'x' }), 'r1'],
-    ['zero limit', rule({ limits: { per_minute: 0 } }), 'r1'],
-    ['negative limit', rule({ limits: { per_session: -1 } }), 'r1'],
-    ['fractional limit', rule({ limits: { per_minute: 1.5 } }), 'r1'],
-    ['string limit', rule({ limits: { per_minute: '5' } }), 'r1'],
-    ['negative max_length', rule({ when: [{ arg: 'a', max_length: -1 }] }), 'r1'],
-    ['non-array in', rule({ when: [{ arg: 'a', in: 'x' }] }), 'r1'],
+    ['constraint with two operators', rule({ when: [{ arg: 'a', min: 1, max: 2 }] }), '(found 2)'],
+    [
+      'absent with optional',
+      rule({ when: [{ arg: 'a', absent: true, optional: true }] }),
+      'cannot combine absent with optional',
+    ],
+    ['absent: false', rule({ when: [{ arg: 'a', absent: false }] }), 'when.0.absent'],
+    ['empty arg', rule({ when: [{ arg: '', min: 1 }] }), 'when.0.arg'],
+    ['arg with trailing dot', rule({ when: [{ arg: 'a.', min: 1 }] }), 'empty path segments'],
+    ['arg with leading dot', rule({ when: [{ arg: '.a', min: 1 }] }), 'empty path segments'],
+    ['arg with double dot', rule({ when: [{ arg: 'a..b', min: 1 }] }), 'empty path segments'],
+    [
+      'matches that does not compile',
+      rule({ when: [{ arg: 'a', matches: '(' }] }),
+      'pattern does not compile',
+    ],
+    [
+      'matches that escapes the anchors',
+      rule({ when: [{ arg: 'a', matches: 'a)|(?:b' }] }),
+      'pattern does not compile',
+    ],
+    [
+      'deny with when',
+      rule({ effect: 'deny', when: [{ arg: 'a', equals: 1 }] }),
+      'deny rules must not have when',
+    ],
+    [
+      'deny with limits',
+      rule({ effect: 'deny', limits: { per_minute: 1 } }),
+      'deny rules must not have limits',
+    ],
+    ['reason on allow', rule({ reason: 'because' }), 'reason is only allowed on deny rules'],
+    [
+      'reason on require_approval',
+      rule({ effect: 'require_approval', reason: 'x' }),
+      'reason is only allowed on deny rules',
+    ],
+    ['zero limit', rule({ limits: { per_minute: 0 } }), 'limits.per_minute'],
+    ['negative limit', rule({ limits: { per_session: -1 } }), 'limits.per_session'],
+    ['fractional limit', rule({ limits: { per_minute: 1.5 } }), 'limits.per_minute'],
+    ['string limit', rule({ limits: { per_minute: '5' } }), 'limits.per_minute'],
+    ['negative max_length', rule({ when: [{ arg: 'a', max_length: -1 }] }), 'when.0.max_length'],
+    ['non-array in', rule({ when: [{ arg: 'a', in: 'x' }] }), 'when.0.in'],
   ];
   it.each(cases)('%s', (_name, text, needle) => {
     const issues = issuesOf(text);
     expect(issues.length).toBeGreaterThan(0);
-    for (const issue of issues) expect(issue).toMatch(/^rule (")?(r1|at index 0)/);
+    for (const issue of issues) expect(issue).toMatch(/^rule ("r1"|at index 0): /);
     expect(issues.join('\n')).toContain(needle);
   });
 

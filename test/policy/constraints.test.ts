@@ -95,8 +95,9 @@ describe('arrays', () => {
   it('fails when one element fails', () => {
     expect(run(spec, { a: ['a', 'x'] })).toEqual(fail('a must be one of ["a","b"]'));
   });
-  it('passes for an empty array', () => {
-    expect(run(spec, { a: [] })).toEqual(pass);
+  it('fails an empty array, even when optional', () => {
+    expect(run(spec, { a: [] })).toEqual(fail('a is empty'));
+    expect(run({ ...spec, optional: true }, { a: [] })).toEqual(fail('a is empty'));
   });
   it('reports a wrong-typed element', () => {
     expect(run({ arg: 'a', max_length: 2 }, { a: ['ab', 3] })).toEqual(
@@ -113,13 +114,25 @@ describe('paths', () => {
       fail('to.address must match /[a-z]+@example\\.test/'),
     );
   });
-  it('treats a path through a non-object as missing', () => {
-    expect(run(spec, { to: 'a@example.test' })).toEqual(fail('to.address is missing'));
-    expect(run(spec, { to: null })).toEqual(fail('to.address is missing'));
-    expect(run(spec, { to: ['x'] })).toEqual(fail('to.address is missing'));
+  it('fails a path through a non-object as the wrong type', () => {
+    for (const to of ['a@example.test', null, ['x'], 5]) {
+      expect(run(spec, { to })).toEqual(fail('to.address has the wrong type'));
+    }
   });
-  it('lets absent pass through a non-object', () => {
-    expect(run({ arg: 'to.address', absent: true }, { to: 'x' })).toEqual(pass);
+  it('does not let optional or absent pass a malformed parent', () => {
+    const optional: ConstraintSpec = { ...spec, optional: true };
+    const wrong = fail('to.address has the wrong type');
+    expect(run(optional, { to: 'x@evil.test' })).toEqual(wrong);
+    expect(run(optional, { to: [{ address: 'x@evil.test' }] })).toEqual(wrong);
+    expect(run({ arg: 'to.address', absent: true }, { to: [{ address: 'x@evil.test' }] })).toEqual(
+      wrong,
+    );
+    expect(run({ arg: 'to.address', absent: true }, { to: 'x' })).toEqual(wrong);
+  });
+  it('still passes optional and absent when the parent is missing', () => {
+    expect(run({ ...spec, optional: true }, {})).toEqual(pass);
+    expect(run({ arg: 'to.address', absent: true }, {})).toEqual(pass);
+    expect(run({ ...spec, optional: true }, { to: {} })).toEqual(pass);
   });
   it('handles empty args', () => {
     expect(run(spec, {})).toEqual(fail('to.address is missing'));
@@ -131,7 +144,9 @@ describe('matches', () => {
   const spec: ConstraintSpec = { arg: 'url', matches: 'https://docs\\.example\\.test/.*' };
   it('is anchored at both ends', () => {
     expect(run(spec, { url: 'https://docs.example.test/page' })).toEqual(pass);
-    expect(run(spec, { url: 'https://evil.test/?u=https://docs.example.test/x' }).pass).toBe(false);
+    expect(run(spec, { url: 'https://evil.test/?u=https://docs.example.test/x' })).toEqual(
+      fail('url must match /https://docs\\.example\\.test/.*/'),
+    );
     expect(run({ arg: 'a', matches: 'a|b' }, { a: 'bx' }).pass).toBe(false);
   });
   it('refuses strings over the cap without running the pattern', () => {
@@ -144,5 +159,15 @@ describe('matches', () => {
   });
   it('throws on a pattern that does not compile', () => {
     expect(() => compileConstraint({ arg: 'a', matches: '(' })).toThrow();
+  });
+  it('rejects a pattern that tries to close the anchor group', () => {
+    expect(() => compileConstraint({ arg: 'a', matches: 'a)|(?:b' })).toThrow();
+  });
+});
+
+describe('operator count', () => {
+  it('throws with zero or two operators', () => {
+    expect(() => compileConstraint({ arg: 'a' })).toThrow(/exactly one operator/);
+    expect(() => compileConstraint({ arg: 'a', min: 1, max: 2 })).toThrow(/exactly one operator/);
   });
 });

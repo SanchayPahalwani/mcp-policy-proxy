@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { compileConstraint, type CompiledConstraint } from './constraints.js';
-import { globToRegExp } from './match.js';
+import { compileGlob, MAX_NAME_LENGTH } from './match.js';
 import {
   DEFAULT_REDACT_KEYS,
   policySchema,
@@ -55,15 +55,16 @@ function describeIssues(raw: unknown, issues: readonly { path: PropertyKey[]; me
 }
 
 function compileRule(spec: RuleSpec, index: number): CompiledRule {
-  const globs = spec.tools.map(globToRegExp);
+  const globs = spec.tools.map(compileGlob);
   const identities = spec.identities === '*' ? undefined : new Set(spec.identities);
   return {
     spec,
     index,
     matches: (identity, server, tool) =>
+      tool.length <= MAX_NAME_LENGTH &&
       (identities === undefined || identities.has(identity)) &&
       (spec.server === '*' || spec.server === server) &&
-      globs.some((g) => g.test(tool)),
+      globs.some((g) => g(tool)),
     constraints: (spec.when ?? []).map(compileConstraint),
   };
 }

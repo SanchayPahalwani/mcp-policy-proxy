@@ -18,14 +18,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function lookup(args: Record<string, unknown>, path: string): unknown {
+type Lookup = { kind: 'found'; value: unknown } | { kind: 'missing' } | { kind: 'malformed' };
+
+// A parent that is present but not a plain object is malformed, not missing:
+// treating it as missing would let `optional` or `absent` pass a hostile shape
+// such as {to: [{address: ...}]}.
+function lookup(args: Record<string, unknown>, path: string): Lookup {
   let current: unknown = args;
   for (const key of path.split('.')) {
+    if (!isPlainObject(current)) return { kind: 'malformed' };
     // Own properties only, so 'constructor' or '__proto__' never resolve.
-    if (!isPlainObject(current) || !Object.hasOwn(current, key)) return undefined;
+    if (!Object.hasOwn(current, key)) return { kind: 'missing' };
     current = current[key];
+    if (current === undefined) return { kind: 'missing' };
   }
-  return current;
+  return { kind: 'found', value: current };
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -90,23 +97,39 @@ function compileCheck(spec: ConstraintSpec): (value: unknown) => ConstraintResul
   throw new Error(`constraint on "${arg}" has no operator`);
 }
 
+const OPERATORS = ['equals', 'in', 'matches', 'max_length', 'min', 'max', 'absent'] as const;
+
 export function compileConstraint(spec: ConstraintSpec): CompiledConstraint {
+  const used = OPERATORS.filter((op) => spec[op] !== undefined);
+  if (used.length !== 1) {
+    throw new Error(
+      `constraint on "${spec.arg}" needs exactly one operator (found ${used.length})`,
+    );
+  }
+  const wrongType: ConstraintResult = { pass: false, why: `${spec.arg} has the wrong type` };
   if (spec.absent) {
     const why = `${spec.arg} must be absent`;
     return {
       spec,
-      test: (args) => (lookup(args, spec.arg) === undefined ? PASS : { pass: false, why }),
+      test(args) {
+        const found = lookup(args, spec.arg);
+        if (found.kind === 'missing') return PASS;
+        return found.kind === 'malformed' ? wrongType : { pass: false, why };
+      },
     };
   }
   const check = compileCheck(spec);
   return {
     spec,
     test(args) {
-      const value = lookup(args, spec.arg);
-      if (value === undefined) {
+      const found = lookup(args, spec.arg);
+      if (found.kind === 'malformed') return wrongType;
+      if (found.kind === 'missing') {
         return spec.optional ? PASS : { pass: false, why: `${spec.arg} is missing` };
       }
+      const { value } = found;
       if (Array.isArray(value)) {
+        if (value.length === 0) return { pass: false, why: `${spec.arg} is empty` };
         for (const item of value) {
           const result = check(item);
           if (!result.pass) return result;

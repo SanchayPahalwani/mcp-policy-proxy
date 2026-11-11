@@ -43,13 +43,19 @@ export const DEFAULT_REDACT_KEYS: string[] = [
 
 // No underscores, so the first '__' in a joined tool name always ends the server part.
 export const SERVER_NAME = /^[a-z0-9][a-z0-9-]*$/;
+export const IDENTITY_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 export const RULE_ID = /^[a-z0-9][a-z0-9_-]*$/;
 
 const OPERATORS = ['equals', 'in', 'matches', 'max_length', 'min', 'max', 'absent'] as const;
 
 const constraintSchema = z
   .strictObject({
-    arg: z.string().min(1),
+    arg: z
+      .string()
+      .min(1)
+      .refine((a) => a.split('.').every((seg) => seg !== ''), {
+        error: 'arg must not have empty path segments',
+      }),
     optional: z.boolean().optional(),
     equals: z.unknown().optional(),
     in: z.array(z.unknown()).optional(),
@@ -90,10 +96,20 @@ const ruleSchema = z
   .strictObject({
     id: z.string().regex(RULE_ID, `must match ${RULE_ID}`),
     description: z.string().optional(),
-    identities: z.union([z.literal('*'), z.array(z.string().min(1)).min(1)], {
-      error: 'identities must be "*" or a non-empty list of names',
+    identities: z.unknown().superRefine((v, ctx) => {
+      const bad = (message: string) => ctx.addIssue({ code: 'custom', message });
+      if (v === '*') return;
+      if (!Array.isArray(v) || v.length === 0) {
+        return bad('identities must be "*" or a non-empty list of names');
+      }
+      for (const name of v) {
+        if (name === '*') bad('a list cannot contain "*"; write identities: "*" instead');
+        else if (typeof name !== 'string' || !IDENTITY_NAME.test(name)) {
+          bad(`identity ${JSON.stringify(name)} must match ${IDENTITY_NAME}`);
+        }
+      }
     }),
-    server: z.union([z.literal('*'), z.string().regex(SERVER_NAME)], {
+    server: z.string().refine((v) => v === '*' || SERVER_NAME.test(v), {
       error: `server must be "*" or match ${SERVER_NAME}`,
     }),
     tools: z.array(z.string().min(1)).min(1, 'tools must not be empty'),
