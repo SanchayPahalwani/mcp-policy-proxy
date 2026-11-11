@@ -1,12 +1,21 @@
+import { request } from 'node:http';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Client, ProtocolError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { sha256Hex, staticTokenAuthenticator } from '../../src/proxy/auth.js';
-import { passthroughGate } from '../../src/proxy/gate.js';
+import { passthroughGate, type Caller, type Gate } from '../../src/proxy/gate.js';
 import { startHttpProxy, type RunningProxy } from '../../src/proxy/http.js';
 import { Upstreams } from '../../src/proxy/upstreams.js';
 import { inMemoryUpstream, stdioUpstream, type MockCall } from '../helpers/mock-upstream.js';
 
 const calls: MockCall[] = [];
+const gateSaw: Array<{ caller: Caller; server: string; tool: string }> = [];
+const recordingGate: Gate = {
+  filterTools: passthroughGate.filterTools,
+  callTool: (caller, target, forward) => {
+    gateSaw.push({ caller, server: target.server, tool: target.tool });
+    return forward();
+  },
+};
 let upstreams: Upstreams;
 let proxy: RunningProxy;
 const cleanups: Array<() => Promise<void>> = [];
@@ -18,7 +27,7 @@ beforeAll(async () => {
   ]);
   proxy = await startHttpProxy({
     upstreams,
-    gate: passthroughGate,
+    gate: recordingGate,
     authenticator: staticTokenAuthenticator([
       { name: 'writer', token_sha256: sha256Hex('tok-writer') },
     ]),
@@ -70,6 +79,23 @@ function post(headers: Record<string, string>, path = '/mcp'): Promise<Response>
   });
 }
 
+function rawRequest(
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number | undefined }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      { host: '127.0.0.1', port: proxy.port, method: 'POST', path, headers },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode }));
+      },
+    );
+    req.on('error', reject);
+    req.end('{}');
+  });
+}
+
 describe('HTTP proxy', () => {
   it('lists namespaced tools from every upstream (modern era)', async () => {
     const client = await connect('tok-writer', { mode: 'auto' });
@@ -107,6 +133,7 @@ describe('HTTP proxy', () => {
   it('returns tool-not-found for malformed or unknown names', async () => {
     const client = await connect('tok-writer', { mode: 'auto' });
     const before = calls.length;
+    const gateBefore = gateSaw.length;
 
     for (const name of ['publish', 'nope__publish', 'docs__', 'Docs__publish']) {
       const error = await client.callTool({ name, arguments: {} }).then(
@@ -118,6 +145,7 @@ describe('HTTP proxy', () => {
       expect((error as ProtocolError).message, name).toContain('not found');
     }
     expect(calls.length).toBe(before);
+    expect(gateSaw.slice(gateBefore)).toEqual([]);
 
     await client.callTool({ name: 'docs__publish', arguments: { id: 1 } });
     expect(calls.slice(before)).toEqual([{ tool: 'publish', args: { id: 1 } }]);
@@ -146,5 +174,47 @@ describe('HTTP proxy', () => {
     const res = await post({ authorization: 'Bearer tok-writer' }, '/other');
     expect(res.status).toBe(404);
     await res.body?.cancel();
+  });
+
+  it('answers 404 off the MCP path before checking the token', async () => {
+    const res = await post({}, '/other');
+    expect(res.status).toBe(404);
+    await res.body?.cancel();
+  });
+
+  it('survives a request target that is not a valid URL path', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxy.port}//`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    await res.body?.cancel();
+
+    const client = await connect('tok-writer', { mode: 'auto' });
+    const result = await client.callTool({ name: 'std__add', arguments: { a: 1, b: 1 } });
+    expect(textOf(result as { content: unknown[] })).toBe('2');
+  });
+
+  it('rejects a foreign Host or Origin header', async () => {
+    // No token: a 403 rather than a 401 shows the guards run before authentication.
+    const json = { 'content-type': 'application/json' };
+    expect((await rawRequest('/mcp', { ...json, host: 'evil.example' })).status).toBe(403);
+    expect((await rawRequest('/mcp', { ...json, origin: 'http://evil.example' })).status).toBe(403);
+  });
+
+  it('passes identity and session to the gate', async () => {
+    const cases: Array<{ mode: 'auto' | 'legacy'; session?: string; expected: string }> = [
+      { mode: 'auto', session: 's-1', expected: 's-1' },
+      { mode: 'auto', expected: 'default' },
+      { mode: 'legacy', session: 's-2', expected: 's-2' },
+    ];
+    for (const { mode, session, expected } of cases) {
+      const client = await connect(
+        'tok-writer',
+        session === undefined ? { mode } : { mode, session },
+      );
+      const before = gateSaw.length;
+      await client.callTool({ name: 'docs__publish', arguments: {} });
+      expect(gateSaw.slice(before)).toEqual([
+        { caller: { identity: 'writer', session: expected }, server: 'docs', tool: 'publish' },
+      ]);
+    }
   });
 });

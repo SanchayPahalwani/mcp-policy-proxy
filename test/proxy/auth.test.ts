@@ -44,9 +44,17 @@ describe('staticTokenAuthenticator', () => {
   });
 
   it('throws for a bad identity name', () => {
-    expect(() => staticTokenAuthenticator([{ name: 'Bad Name', token_sha256: 'x' }])).toThrow(
-      /Bad Name/,
-    );
+    expect(() =>
+      staticTokenAuthenticator([{ name: 'Bad Name', token_sha256: sha256Hex('t') }]),
+    ).toThrow(/Invalid identity name "Bad Name"/);
+  });
+
+  it('throws for a token_sha256 that is not 64 hex characters', () => {
+    for (const digest of ['x'.repeat(64), sha256Hex('t').slice(1), `${sha256Hex('t')}0`]) {
+      expect(() => staticTokenAuthenticator([{ name: 'a', token_sha256: digest }])).toThrow(
+        /64 hex characters/,
+      );
+    }
   });
 
   it('throws when an identity has both or neither token fields', () => {

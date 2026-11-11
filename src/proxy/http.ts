@@ -26,9 +26,14 @@ export interface RunningProxy {
 export const DEFAULT_SESSION = 'default';
 export const SESSION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
-function isLoopback(host: string): boolean {
-  if (host === 'localhost' || host === '::1') return true;
-  return isIP(host) === 4 && host.startsWith('127.');
+// Exactly the names the SDK's localhost guards accept; any other bind would 403 everything.
+const LOCALHOST_BINDS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+function pathOf(target: string | undefined): string {
+  // Not `new URL`: it throws on targets such as `//`, and this runs before any auth.
+  const raw = target ?? '/';
+  const query = raw.indexOf('?');
+  return query < 0 ? raw : raw.slice(0, query);
 }
 
 function headerValue(req: IncomingMessage, name: string): string | undefined {
@@ -46,24 +51,31 @@ export async function startHttpProxy(opts: HttpProxyOptions): Promise<RunningPro
   const path = opts.path ?? '/mcp';
   const sessionHeader = (opts.sessionHeader ?? 'x-agent-session').toLowerCase();
   // DNS rebinding only matters when a browser on this machine can reach us by a loopback name.
-  const guards = isLoopback(host) ? [localhostHostValidation(), localhostOriginValidation()] : [];
+  const guards = LOCALHOST_BINDS.has(host)
+    ? [localhostHostValidation(), localhostOriginValidation()]
+    : [];
 
   const handler = createMcpHandler(
     (ctx) => {
       const auth = ctx.authInfo;
       if (!auth) throw new Error('Request reached the MCP handler without authentication');
       const session = auth.extra?.['session'];
-      return buildServer(opts, {
-        identity: auth.clientId,
-        session: typeof session === 'string' ? session : DEFAULT_SESSION,
-      });
+      if (typeof session !== 'string')
+        throw new Error('Request reached the MCP handler without a session');
+      return buildServer(opts, { identity: auth.clientId, session });
     },
     opts.onError ? { onerror: opts.onError } : undefined,
   );
   const nodeHandler = toNodeHandler(handler, opts.onError ? { onerror: opts.onError } : undefined);
 
-  const http = createServer((req, res) => {
-    if (new URL(req.url ?? '/', 'http://proxy').pathname !== path) {
+  const fail = (res: ServerResponse, e: unknown) => {
+    opts.onError?.(e instanceof Error ? e : new Error(String(e)));
+    if (!res.headersSent) sendJson(res, 500, { error: 'internal_error' });
+    else res.destroy();
+  };
+
+  const handle = (req: IncomingMessage, res: ServerResponse) => {
+    if (pathOf(req.url) !== path) {
       sendJson(res, 404, { error: 'not_found' });
       return;
     }
@@ -87,7 +99,16 @@ export async function startHttpProxy(opts: HttpProxyOptions): Promise<RunningPro
       scopes: [],
       extra: { session },
     };
-    void nodeHandler(req, res);
+    nodeHandler(req, res).catch((e: unknown) => fail(res, e));
+  };
+
+  // A throw escaping a request callback would take the whole process down.
+  const http = createServer((req, res) => {
+    try {
+      handle(req, res);
+    } catch (e) {
+      fail(res, e);
+    }
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -104,12 +125,15 @@ export async function startHttpProxy(opts: HttpProxyOptions): Promise<RunningPro
     url: `http://${urlHost}:${port}${path}`,
     port,
     close: async () => {
-      await handler.close();
-      // Open keep-alive sockets would otherwise hold close() until they time out.
-      http.closeAllConnections();
-      await new Promise<void>((resolve, reject) =>
-        http.close((err) => (err ? reject(err) : resolve())),
-      );
+      try {
+        await handler.close();
+      } finally {
+        // Open keep-alive sockets would otherwise hold close() until they time out.
+        http.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          http.close((err) => (err ? reject(err) : resolve())),
+        );
+      }
     },
   };
 }
