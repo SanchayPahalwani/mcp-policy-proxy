@@ -9,11 +9,13 @@ inputs:
     description: Path to the policy file.
     required: true
   sessions:
-    description: Whitespace-separated session files or globs to check against the policy.
+    description: >-
+      Recorded session files to check against the policy. Paths or globs, separated by whitespace or newlines. Bash expands globs (`*`, `?`, and `**` which is recursive on bash 4 and later); there is no brace expansion. A path containing a space cannot be written literally: use `?` in its place.
     required: false
     default: ''
   tests:
-    description: Whitespace-separated policy test files or globs to run.
+    description: >-
+      Policy test files to run. Paths or globs, separated by whitespace or newlines. Bash expands globs (`*`, `?`, and `**` which is recursive on bash 4 and later); there is no brace expansion. A path containing a space cannot be written literally: use `?` in its place.
     required: false
     default: ''
   config:
@@ -36,6 +38,8 @@ runs:
       uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
+        # The consumer's lockfile and cache are not this action's to manage.
+        package-manager-cache: false
 
     - name: Build the checker
       shell: bash
@@ -43,7 +47,10 @@ runs:
         set -euo pipefail
         if [ ! -f "$GITHUB_ACTION_PATH/dist/cli.js" ]; then
           cd "$GITHUB_ACTION_PATH"
-          npm ci --ignore-scripts && npm run build
+          # --include=dev: the compiler is a dev dependency, and a consumer may
+          # run with NODE_ENV=production.
+          npm ci --ignore-scripts --include=dev
+          npm run build
         fi
 
     - name: Validate the policy
@@ -68,7 +75,13 @@ runs:
       run: |
         set -euo pipefail
         shopt -s nullglob
-        read -r -a patterns <<< "$TESTS"
+        shopt -s globstar 2>/dev/null || true
+        # -d '' reads all lines, not just the first; it returns 1 at end of input.
+        read -r -d '' -a patterns <<< "$TESTS" || true
+        if [ "${#patterns[@]}" -eq 0 ]; then
+          echo "mcp-policy-check: input 'tests' is empty" >&2
+          exit 2
+        fi
         files=()
         for pattern in "${patterns[@]}"; do
           # Unquoted on purpose: the shell expands the glob. Splitting is
@@ -80,7 +93,7 @@ runs:
           fi
           files+=("${matches[@]}")
         done
-        node "$GITHUB_ACTION_PATH/dist/cli.js" test --policy "$POLICY" "${files[@]}"
+        node "$GITHUB_ACTION_PATH/dist/cli.js" test --policy "$POLICY" -- "${files[@]}"
 
     - name: Check recorded sessions
       if: inputs.sessions != ''
@@ -92,7 +105,13 @@ runs:
       run: |
         set -euo pipefail
         shopt -s nullglob
-        read -r -a patterns <<< "$SESSIONS"
+        shopt -s globstar 2>/dev/null || true
+        # -d '' reads all lines, not just the first; it returns 1 at end of input.
+        read -r -d '' -a patterns <<< "$SESSIONS" || true
+        if [ "${#patterns[@]}" -eq 0 ]; then
+          echo "mcp-policy-check: input 'sessions' is empty" >&2
+          exit 2
+        fi
         files=()
         for pattern in "${patterns[@]}"; do
           # Unquoted on purpose: the shell expands the glob. Splitting is
@@ -108,4 +127,4 @@ runs:
         if [ -n "$IDENTITY" ]; then
           args+=(--identity "$IDENTITY")
         fi
-        node "$GITHUB_ACTION_PATH/dist/cli.js" check "${args[@]}" "${files[@]}"
+        node "$GITHUB_ACTION_PATH/dist/cli.js" check "${args[@]}" -- "${files[@]}"

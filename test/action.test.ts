@@ -1,7 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { main } from '../src/cli.js';
 
@@ -55,10 +58,152 @@ describe('ci.yml', () => {
     expect(steps.some((s) => s.uses === './')).toBe(true);
   });
 
+  it('starts every run step with set -euo pipefail', () => {
+    const runs = steps.filter((s) => s.run !== undefined);
+    expect(runs.length).toBeGreaterThan(0);
+    for (const step of runs) expect(step.run).toMatch(/^set -euo pipefail\n/);
+  });
+
+  it('passes the three example paths to the action', () => {
+    expect(steps.find((s) => s.uses === './')?.with).toEqual({
+      policy: 'examples/policy.yaml',
+      tests: 'examples/policy.test.yaml',
+      sessions: 'examples/sessions/ok.jsonl',
+    });
+  });
+
+  it('requires exit code 1 and the violation count from the negative step', () => {
+    const run = steps.find((s) => s.run?.includes('violation.jsonl'))?.run ?? '';
+    expect(run).toContain('-ne 1');
+    expect(run).toContain('3 violation(s)');
+    expect(run).not.toContain('|| true');
+  });
+
   it('asserts that the violating session is rejected with exit 1', () => {
     const negative = steps.find((s) => s.run?.includes('examples/sessions/violation.jsonl'));
     expect(negative).toBeDefined();
     expect(negative?.shell).toBe('bash');
+  });
+});
+
+describe('action.yml shell steps', () => {
+  it('start with set -euo pipefail, and guard the optional steps', () => {
+    for (const step of action.runs.steps.filter((s) => s.run !== undefined)) {
+      expect(step.run).toMatch(/^set -euo pipefail\n/);
+    }
+    const named = (n: string) => action.runs.steps.find((s) => s.name === n);
+    expect(named('Run policy tests')?.if).toBe("inputs.tests != ''");
+    expect(named('Check recorded sessions')?.if).toBe("inputs.sessions != ''");
+  });
+});
+
+const posix = process.platform !== 'win32';
+const sandboxes: string[] = [];
+afterAll(() => {
+  for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+});
+
+/** Runs one of the action's scripts as bash would, against a stand-in CLI that echoes its argv. */
+function runStep(name: string, env: Record<string, string>, files: string[] = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'action-test-'));
+  sandboxes.push(dir);
+  mkdirSync(join(dir, 'dist'));
+  writeFileSync(
+    join(dir, 'dist', 'cli.js'),
+    'console.log(JSON.stringify(process.argv.slice(2)));\n',
+  );
+  for (const f of files) {
+    mkdirSync(join(dir, f, '..'), { recursive: true });
+    writeFileSync(join(dir, f), '');
+  }
+  const script = action.runs.steps.find((s) => s.name === name)?.run ?? '';
+  writeFileSync(join(dir, 'step.sh'), script);
+  const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', 'step.sh'], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { PATH: process.env['PATH'] ?? '', GITHUB_ACTION_PATH: dir, POLICY: 'p.yaml', ...env },
+  });
+  const argv = r.status === 0 ? (JSON.parse(r.stdout.trim()) as string[]) : [];
+  return { code: r.status, argv, stderr: r.stderr, dir };
+}
+
+const bashMajor = posix
+  ? Number(/version (\d+)/.exec(spawnSync('bash', ['--version'], { encoding: 'utf8' }).stdout)?.[1])
+  : 0;
+
+describe.skipIf(!posix)('the action list inputs, run as bash runs them', () => {
+  it('reads every line of a newline-separated list', () => {
+    const r = runStep('Check recorded sessions', { SESSIONS: 'a.jsonl\nb.jsonl\n', IDENTITY: '' }, [
+      'a.jsonl',
+      'b.jsonl',
+    ]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.argv).toEqual(['check', '--policy', 'p.yaml', '--', 'a.jsonl', 'b.jsonl']);
+  });
+
+  it('passes an identity when given', () => {
+    const r = runStep('Check recorded sessions', { SESSIONS: 'a.jsonl', IDENTITY: 'writer' }, [
+      'a.jsonl',
+    ]);
+    expect(r.argv).toEqual([
+      'check',
+      '--policy',
+      'p.yaml',
+      '--identity',
+      'writer',
+      '--',
+      'a.jsonl',
+    ]);
+  });
+
+  it('keeps an option-like word after --', () => {
+    const r = runStep(
+      'Check recorded sessions',
+      { SESSIONS: '--policy=permissive.yaml a.jsonl', IDENTITY: '' },
+      ['a.jsonl', '--policy=permissive.yaml'],
+    );
+    const at = r.argv.indexOf('--policy=permissive.yaml');
+    expect(at).toBeGreaterThan(r.argv.indexOf('--'));
+    expect(r.argv.indexOf('--')).toBeGreaterThan(-1);
+  });
+
+  it.skipIf(bashMajor < 4)('expands ** at several depths', () => {
+    const r = runStep('Run policy tests', { TESTS: 'deep/**/*.yaml' }, [
+      'deep/a.yaml',
+      'deep/x/b.yaml',
+      'deep/x/y/c.yaml',
+    ]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.argv.slice(r.argv.indexOf('--') + 1).sort()).toEqual([
+      'deep/a.yaml',
+      'deep/x/b.yaml',
+      'deep/x/y/c.yaml',
+    ]);
+  });
+
+  it('exits 2 naming the input when a glob matches nothing', () => {
+    const r = runStep('Check recorded sessions', { SESSIONS: 'none/*.jsonl', IDENTITY: '' });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("'sessions'");
+  });
+
+  it('exits 2 naming the input when the list is only whitespace', () => {
+    const r = runStep('Run policy tests', { TESTS: ' \n\t ' });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("'tests' is empty");
+  });
+
+  it('never executes shell syntax in an input', () => {
+    const r = runStep(
+      'Check recorded sessions',
+      { SESSIONS: '$(touch pwned) a.jsonl', IDENTITY: '' },
+      ['a.jsonl'],
+    );
+    // A literal word without glob characters is passed on as is; the CLI then
+    // reports it unreadable. The point here is that nothing ran.
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.argv).toContain('$(touch');
+    expect(existsSync(join(r.dir, 'pwned'))).toBe(false);
   });
 });
 

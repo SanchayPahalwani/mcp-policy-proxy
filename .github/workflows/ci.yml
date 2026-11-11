@@ -17,26 +17,38 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
 
-      - run: npm ci
-        shell: bash
+      - shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
 
-      - run: npm run format:check
-        shell: bash
+      - shell: bash
+        run: |
+          set -euo pipefail
+          npm run format:check
 
-      - run: npm run typecheck
-        shell: bash
+      - shell: bash
+        run: |
+          set -euo pipefail
+          npm run typecheck
 
-      - run: npm test
-        shell: bash
+      - shell: bash
+        run: |
+          set -euo pipefail
+          npm test
 
-      - run: npm run build
-        shell: bash
+      - shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
 
       - name: Check the example policy
         uses: ./
@@ -52,10 +64,18 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          node dist/cli.js check --policy examples/policy.yaml examples/sessions/violation.jsonl || status=$?
+          output=$(node dist/cli.js check --policy examples/policy.yaml --format text examples/sessions/violation.jsonl 2>&1) || status=$?
+          echo "$output"
           if [ "$status" -ne 1 ]; then
             echo "expected exit 1 (violations found), got $status" >&2
             exit 1
           fi
+          case "$output" in
+            *"3 violation(s)"*) ;;
+            *)
+              echo "expected the report to say 3 violation(s)" >&2
+              exit 1
+              ;;
+          esac
 
 # eval replay step is added here by a later task
