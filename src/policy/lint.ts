@@ -40,10 +40,14 @@ export function lintPolicy(
       }
     }
     if (known.servers && spec.server !== '*' && !known.servers.includes(spec.server)) {
+      // A typo on a deny rule silently disables it; on a permitting rule it only never matches.
+      const denies = spec.effect === 'deny';
       issues.push({
-        level: 'error',
+        level: denies ? 'error' : 'warning',
         rule,
-        message: `server "${spec.server}" is not in the configuration`,
+        message: denies
+          ? `server "${spec.server}" is not in the configuration, so this deny rule can never apply`
+          : `server "${spec.server}" is not in the configuration, so this rule can never match`,
       });
     }
     if (spec.effect === 'deny') continue;
