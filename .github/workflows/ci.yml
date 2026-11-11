@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+        shell: bash
+
+      - run: npm run format:check
+        shell: bash
+
+      - run: npm run typecheck
+        shell: bash
+
+      - run: npm test
+        shell: bash
+
+      - run: npm run build
+        shell: bash
+
+      - name: Check the example policy
+        uses: ./
+        with:
+          policy: examples/policy.yaml
+          tests: examples/policy.test.yaml
+          sessions: examples/sessions/ok.jsonl
+
+      # The checker must reject this session. Exit 2 would mean the file could
+      # not be read, which is not what this step asserts.
+      - name: Expect violations in the bad session
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          node dist/cli.js check --policy examples/policy.yaml examples/sessions/violation.jsonl || status=$?
+          if [ "$status" -ne 1 ]; then
+            echo "expected exit 1 (violations found), got $status" >&2
+            exit 1
+          fi
+
+# eval replay step is added here by a later task

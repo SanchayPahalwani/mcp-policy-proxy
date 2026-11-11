@@ -1,0 +1,111 @@
+# Checks an MCP policy file: validates it, runs its policy tests and checks
+# recorded agent sessions against it. Builds the checker from source on first
+# use, so the action needs no published package.
+name: MCP policy check
+description: Validate an MCP policy, run its policy tests and check recorded sessions against it.
+
+inputs:
+  policy:
+    description: Path to the policy file.
+    required: true
+  sessions:
+    description: Whitespace-separated session files or globs to check against the policy.
+    required: false
+    default: ''
+  tests:
+    description: Whitespace-separated policy test files or globs to run.
+    required: false
+    default: ''
+  config:
+    description: Path to a proxy config file to validate along with the policy.
+    required: false
+    default: ''
+  identity:
+    description: Identity to check sessions as, when the sessions do not name one.
+    required: false
+    default: ''
+  node-version:
+    description: Node.js version used to build and run the checker.
+    required: false
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Build the checker
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -f "$GITHUB_ACTION_PATH/dist/cli.js" ]; then
+          cd "$GITHUB_ACTION_PATH"
+          npm ci --ignore-scripts && npm run build
+        fi
+
+    - name: Validate the policy
+      shell: bash
+      env:
+        POLICY: ${{ inputs.policy }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        args=(--policy "$POLICY")
+        if [ -n "$CONFIG" ]; then
+          args+=(--config "$CONFIG")
+        fi
+        node "$GITHUB_ACTION_PATH/dist/cli.js" validate "${args[@]}"
+
+    - name: Run policy tests
+      if: inputs.tests != ''
+      shell: bash
+      env:
+        POLICY: ${{ inputs.policy }}
+        TESTS: ${{ inputs.tests }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        read -r -a patterns <<< "$TESTS"
+        files=()
+        for pattern in "${patterns[@]}"; do
+          # Unquoted on purpose: the shell expands the glob. Splitting is
+          # already done, so the pattern holds no whitespace.
+          matches=($pattern)
+          if [ "${#matches[@]}" -eq 0 ]; then
+            echo "mcp-policy-check: input 'tests' matched no files: $pattern" >&2
+            exit 2
+          fi
+          files+=("${matches[@]}")
+        done
+        node "$GITHUB_ACTION_PATH/dist/cli.js" test --policy "$POLICY" "${files[@]}"
+
+    - name: Check recorded sessions
+      if: inputs.sessions != ''
+      shell: bash
+      env:
+        POLICY: ${{ inputs.policy }}
+        SESSIONS: ${{ inputs.sessions }}
+        IDENTITY: ${{ inputs.identity }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        read -r -a patterns <<< "$SESSIONS"
+        files=()
+        for pattern in "${patterns[@]}"; do
+          # Unquoted on purpose: the shell expands the glob. Splitting is
+          # already done, so the pattern holds no whitespace.
+          matches=($pattern)
+          if [ "${#matches[@]}" -eq 0 ]; then
+            echo "mcp-policy-check: input 'sessions' matched no files: $pattern" >&2
+            exit 2
+          fi
+          files+=("${matches[@]}")
+        done
+        args=(--policy "$POLICY")
+        if [ -n "$IDENTITY" ]; then
+          args+=(--identity "$IDENTITY")
+        fi
+        node "$GITHUB_ACTION_PATH/dist/cli.js" check "${args[@]}" "${files[@]}"
