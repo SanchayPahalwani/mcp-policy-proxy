@@ -76,9 +76,16 @@ describe('world', () => {
     });
     expect(textOf(sent)).toBe('Sent to team@example.test');
     await upstreams.callTool('mail', 'send', { to: 'a@example.test', subject: 's', body: 'b' });
+    await upstreams.callTool('mail', 'send', {
+      to: 'team@example.test',
+      bcc: 'hidden@example.test',
+      subject: 'B',
+      body: 'Blind',
+    });
     expect(world.sent).toEqual([
       { to: 'team@example.test', cc: 'someone@example.test', subject: 'Hi', body: 'Notes' },
       { to: 'a@example.test', subject: 's', body: 'b' },
+      { to: 'team@example.test', bcc: 'hidden@example.test', subject: 'B', body: 'Blind' },
     ]);
   });
 
