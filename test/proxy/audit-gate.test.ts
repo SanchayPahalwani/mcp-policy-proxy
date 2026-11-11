@@ -10,7 +10,7 @@ import {
 } from '../../src/audit/log.js';
 import { loadPolicy, parsePolicy, type Policy } from '../../src/policy/load.js';
 import { sha256Hex, staticTokenAuthenticator } from '../../src/proxy/auth.js';
-import { policyGate } from '../../src/proxy/gate.js';
+import { policyGate } from '../../src/proxy/policy-gate.js';
 import { startHttpProxy, type RunningProxy } from '../../src/proxy/http.js';
 import { Upstreams, type UpstreamSpec } from '../../src/proxy/upstreams.js';
 import { mockServer, type MockCall, type MockTool } from '../helpers/mock-upstream.js';
