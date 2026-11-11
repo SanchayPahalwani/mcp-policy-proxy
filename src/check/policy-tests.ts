@@ -1,8 +1,15 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
-import { commit, decide, visible, type Call, type Decision } from '../policy/engine.js';
+import {
+  commit,
+  decide,
+  visible,
+  type Call,
+  type Decision,
+  type DecisionCode,
+} from '../policy/engine.js';
 import { LimitState } from '../policy/limits.js';
 import { loadPolicy, PolicyError, type Policy } from '../policy/load.js';
 
@@ -14,14 +21,18 @@ export interface PolicyTestResult {
 }
 
 const effectSchema = z.enum(['allow', 'deny', 'require_approval']);
-const codeSchema = z.enum([
+const DECISION_CODES = [
   'allowed',
   'approval_required',
   'denied_by_rule',
   'no_matching_rule',
   'constraint_failed',
   'limit_exceeded',
-]);
+] as const satisfies readonly DecisionCode[];
+// Fails to compile when a code is added to the engine but not listed above.
+const _allCodesListed: DecisionCode extends (typeof DECISION_CODES)[number] ? true : never = true;
+void _allCodesListed;
+const codeSchema = z.enum(DECISION_CODES);
 
 const callSchema = z.strictObject({
   identity: z.string(),
@@ -60,17 +71,17 @@ const fileSchema = z.strictObject({
 });
 
 type Case = z.infer<typeof caseSchema>;
-type Call_ = z.infer<typeof callSchema>;
+type CallSpec = z.infer<typeof callSchema>;
 type Expected = {
   expect: Decision['effect'];
   rule?: string | undefined;
-  code?: string | undefined;
+  code?: DecisionCode | undefined;
 };
 
 // Any constant works; only the offsets between steps matter.
 const BASE_TIME = Date.UTC(2026, 0, 1);
 
-function toCall(c: Call_, at: number): Call {
+function toCall(c: CallSpec, at: number): Call {
   return { ...c, at };
 }
 
@@ -110,6 +121,17 @@ function runCase(policy: Policy, c: Case): string | undefined {
   return undefined;
 }
 
+function loadReferencedPolicy(testPath: string, reference: string | undefined): Policy {
+  if (reference === undefined) {
+    throw new PolicyError([`${testPath}: no "policy:" in the file and no policy was given`]);
+  }
+  const policyPath = resolve(dirname(testPath), reference);
+  if (!existsSync(policyPath)) {
+    throw new PolicyError([`${testPath}: policy file not found: ${policyPath}`]);
+  }
+  return loadPolicy(policyPath);
+}
+
 export function runPolicyTestFile(path: string, policyOverride?: Policy): PolicyTestResult[] {
   let raw: unknown;
   try {
@@ -126,16 +148,22 @@ export function runPolicyTestFile(path: string, policyOverride?: Policy): Policy
     );
   }
   const file = parsed.data;
-  let policy = policyOverride;
-  if (policy === undefined) {
-    if (file.policy === undefined) {
-      throw new PolicyError([`${path}: no "policy:" in the file and no policy was given`]);
+  for (const c of file.cases) {
+    if (!('sequence' in c)) continue;
+    let previous = -Infinity;
+    for (const [index, step] of c.sequence.entries()) {
+      const at = step.at ?? index;
+      if (at < previous) {
+        throw new PolicyError([
+          `${path}: case "${c.name}": step ${index}: "at" (${at}) is earlier than the previous step`,
+        ]);
+      }
+      previous = at;
     }
-    policy = loadPolicy(resolve(dirname(path), file.policy));
   }
-  const loaded = policy;
+  const policy = policyOverride ?? loadReferencedPolicy(path, file.policy);
   return file.cases.map((c) => {
-    const message = runCase(loaded, c);
+    const message = runCase(policy, c);
     return message === undefined
       ? { file: path, name: c.name, ok: true }
       : { file: path, name: c.name, ok: false, message };

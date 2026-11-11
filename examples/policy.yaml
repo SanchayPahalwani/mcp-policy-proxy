@@ -3,7 +3,7 @@
 version: 1
 
 rules:
-  # Writers work on drafts, with a cap on title length and on calls per session.
+  # Writers need to read and edit drafts to do their job; the caps keep a runaway agent small.
   - id: writer-drafts
     identities: [writer]
     server: docs
@@ -31,7 +31,7 @@ rules:
     tools: [publish]
     effect: require_approval
 
-  # Release managers can read drafts without approval.
+  # A release manager has to read a draft before approving its publication.
   - id: release-read
     identities: [release-manager]
     server: docs

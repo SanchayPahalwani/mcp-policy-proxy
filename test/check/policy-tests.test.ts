@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runPolicyTestFile } from '../../src/check/policy-tests.js';
-import { loadPolicy, PolicyError } from '../../src/policy/load.js';
+import { loadPolicy, parsePolicy, PolicyError } from '../../src/policy/load.js';
 
 function tempTestFile(body: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'policy-tests-'));
@@ -45,7 +45,7 @@ describe('runPolicyTestFile', () => {
       `cases:\n  - name: seq\n    sequence:\n` +
       `      - { call: { ${MAIL} }, expect: allow }\n` +
       `      - { call: { ${MAIL} }, expect: allow, at: 5 }\n` +
-      `      - { call: { ${MAIL} }, expect: ${third} }\n`;
+      `      - { call: { ${MAIL} }, expect: ${third}, at: 10 }\n`;
     const policy = loadPolicy('examples/policy.yaml');
     expect(runPolicyTestFile(tempTestFile(steps('deny')), policy)[0]?.ok).toBe(true);
     const [bad] = runPolicyTestFile(tempTestFile(steps('allow')), policy);
@@ -53,19 +53,75 @@ describe('runPolicyTestFile', () => {
     expect(bad?.message).toMatch(/^step 2: expected allow, got deny \(limit_exceeded/);
   });
 
-  it('commits a require_approval step only when approved', () => {
-    const body = (approved: string) =>
-      `cases:\n  - name: a\n    sequence:\n` +
-      `      - { call: { identity: release-manager, server: docs, tool: publish }, expect: require_approval${approved} }\n`;
-    const policy = loadPolicy('examples/policy.yaml');
-    expect(runPolicyTestFile(tempTestFile(body(', approved: true')), policy)[0]?.ok).toBe(true);
+  describe('commit rules', () => {
+    const limited = (effect: string, limit: string) =>
+      parsePolicy(
+        `version: 1\nrules:\n  - id: r\n    identities: [a]\n    server: s\n    tools: [t]\n    effect: ${effect}\n    limits: { ${limit} }\n`,
+      );
+    const step = (expectation: string) =>
+      `      - { call: { identity: a, server: s, tool: t }, ${expectation} }\n`;
+    const seq = (...steps: string[]) =>
+      tempTestFile(`cases:\n  - name: c\n    sequence:\n${steps.join('')}`);
+
+    it('commits an approved require_approval step', () => {
+      const policy = limited('require_approval', 'per_session: 1');
+      const path = seq(
+        step('expect: require_approval, approved: true'),
+        step('expect: deny, code: limit_exceeded'),
+      );
+      expect(runPolicyTestFile(path, policy)[0]?.ok).toBe(true);
+    });
+
+    it('does not commit a require_approval step that was not approved', () => {
+      const policy = limited('require_approval', 'per_session: 1');
+      const path = seq(step('expect: require_approval'), step('expect: require_approval'));
+      expect(runPolicyTestFile(path, policy)[0]?.ok).toBe(true);
+    });
+
+    it('does not commit a denied step', () => {
+      const policy = limited('allow', 'per_minute: 1');
+      const path = seq(
+        step('expect: allow, at: 0'),
+        step('expect: deny, code: limit_exceeded, at: 30'),
+        step('expect: allow, at: 61'),
+      );
+      expect(runPolicyTestFile(path, policy)[0]?.ok).toBe(true);
+    });
+
+    it('enforces per_minute on its own', () => {
+      const policy = limited('allow', 'per_minute: 2');
+      const path = seq(
+        step('expect: allow, at: 0'),
+        step('expect: allow, at: 5'),
+        step('expect: deny, code: limit_exceeded, at: 10'),
+        step('expect: allow, at: 70'),
+      );
+      expect(runPolicyTestFile(path, policy)[0]?.ok).toBe(true);
+    });
   });
 
-  it('resolves policy: relative to the test file', () => {
-    const path = tempTestFile(
-      `policy: ${join(process.cwd(), 'examples/policy.yaml')}\ncases: []\n`,
-    );
+  it('resolves policy: relative to the test file, not the working directory', () => {
+    const path = tempTestFile(`policy: ./p.yaml\ncases: []\n`);
+    writeFileSync(join(dirname(path), 'p.yaml'), readFileSync('examples/policy.yaml', 'utf8'));
+    expect(process.cwd()).not.toBe(dirname(path));
     expect(runPolicyTestFile(path)).toEqual([]);
+  });
+
+  it('names the test file and policy path when the policy is missing', () => {
+    const path = tempTestFile(`policy: ./nope.yaml\ncases: []\n`);
+    expect(() => runPolicyTestFile(path)).toThrow(PolicyError);
+    expect(() => runPolicyTestFile(path)).toThrow(/x\.test\.yaml.*nope\.yaml/s);
+  });
+
+  it('rejects a sequence whose at values go backwards, naming case and step', () => {
+    const path = tempTestFile(
+      `cases:\n  - name: back\n    sequence:\n` +
+        `      - { call: { ${MAIL} }, expect: allow, at: 5 }\n` +
+        `      - { call: { ${MAIL} }, expect: allow, at: 2 }\n`,
+    );
+    expect(() => runPolicyTestFile(path, loadPolicy('examples/policy.yaml'))).toThrow(
+      /case "back": step 1/,
+    );
   });
 
   it('throws PolicyError on an unknown key, a missing policy, or bad YAML', () => {

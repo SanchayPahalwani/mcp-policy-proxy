@@ -111,7 +111,7 @@ cases:
         expect: deny
         code: limit_exceeded
         rule: mail-team-only
-        at: 10
+        at: 120
   - name: eleventh fetch in one session is refused
     sequence:
       - {
@@ -224,4 +224,5 @@ cases:
             },
           expect: deny,
           code: limit_exceeded,
+          rule: fetch-docs-site,
         }

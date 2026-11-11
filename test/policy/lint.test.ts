@@ -19,6 +19,7 @@ describe('lintPolicy', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ level: 'error', rule: 'r1' });
     expect(issues[0]?.message).toContain('credentials.Token');
+    expect(issues[0]?.message).not.toContain('r1');
   });
 
   it('errors on an unknown identity or server only when a known set is given', () => {
@@ -54,6 +55,13 @@ describe('lintPolicy', () => {
     expect(lintPolicy(mk('allow'))).toHaveLength(1);
     expect(lintPolicy(mk('require_approval'))).toHaveLength(1);
     expect(lintPolicy(mk('deny'))).toEqual([]);
+  });
+
+  it('does not warn on identity "*" when the rule has constraints', () => {
+    const p = parsePolicy(
+      `version: 1\nrules:\n  - id: any\n    identities: "*"\n    server: docs\n    tools: [x]\n    effect: allow\n    when:\n      - { arg: id, equals: a }\n`,
+    );
+    expect(lintPolicy(p)).toEqual([]);
   });
 
   it('passes the example policy', () => {

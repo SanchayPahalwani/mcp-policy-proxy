@@ -24,7 +24,7 @@ export function lintPolicy(
         issues.push({
           level: 'error',
           rule,
-          message: `rule "${rule}": constraint on "${c.arg}" uses a redacted key, so the audit log cannot reproduce the decision`,
+          message: `constraint on "${c.arg}" uses a redacted key, so the audit log cannot reproduce the decision`,
         });
       }
     }
@@ -34,7 +34,7 @@ export function lintPolicy(
           issues.push({
             level: 'error',
             rule,
-            message: `rule "${rule}": identity "${id}" is not in the configuration`,
+            message: `identity "${id}" is not in the configuration`,
           });
         }
       }
@@ -43,7 +43,7 @@ export function lintPolicy(
       issues.push({
         level: 'error',
         rule,
-        message: `rule "${rule}": server "${spec.server}" is not in the configuration`,
+        message: `server "${spec.server}" is not in the configuration`,
       });
     }
     if (spec.effect === 'deny') continue;
@@ -51,14 +51,14 @@ export function lintPolicy(
       issues.push({
         level: 'warning',
         rule,
-        message: `rule "${rule}": permits every tool on every server`,
+        message: 'permits every tool on every server',
       });
     }
     if (spec.identities === '*' && (spec.when ?? []).length === 0) {
       issues.push({
         level: 'warning',
         rule,
-        message: `rule "${rule}": permits any identity with no argument constraints`,
+        message: 'permits any identity with no argument constraints',
       });
     }
   }
