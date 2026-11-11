@@ -1,0 +1,68 @@
+# Example policy for the docs, web and mail servers used by the demo, the eval and CI.
+# There is no default-allow setting: a call that no rule permits is refused.
+version: 1
+
+rules:
+  # Writers work on drafts, with a cap on title length and on calls per session.
+  - id: writer-drafts
+    identities: [writer]
+    server: docs
+    tools: [list_drafts, get_draft, create_draft, update_draft]
+    effect: allow
+    when:
+      - arg: title
+        max_length: 120
+        optional: true
+    limits:
+      per_session: 20
+
+  # Deny wins over every allow rule, so writers can never publish.
+  - id: writers-never-publish
+    identities: [writer]
+    server: docs
+    tools: [publish]
+    effect: deny
+    reason: Publishing needs a release manager.
+
+  # A release manager may publish, but a human approves each call.
+  - id: release-publish
+    identities: [release-manager]
+    server: docs
+    tools: [publish]
+    effect: require_approval
+
+  # Release managers can read drafts without approval.
+  - id: release-read
+    identities: [release-manager]
+    server: docs
+    tools: [list_drafts, get_draft]
+    effect: allow
+
+  # Page fetches are limited to the docs site, so a page cannot send an agent elsewhere.
+  - id: fetch-docs-site
+    identities: [writer, release-manager]
+    server: web
+    tools: [fetch_page]
+    effect: allow
+    when:
+      - arg: url
+        matches: 'https://docs\.example\.test/.*'
+    limits:
+      per_session: 10
+
+  # Mail goes to the team address only: no other recipient, no cc, no bcc.
+  - id: mail-team-only
+    identities: [writer]
+    server: mail
+    tools: [send]
+    effect: allow
+    when:
+      - arg: to
+        equals: team@example.test
+      - arg: cc
+        absent: true
+      - arg: bcc
+        absent: true
+    limits:
+      per_session: 2
+      per_minute: 2

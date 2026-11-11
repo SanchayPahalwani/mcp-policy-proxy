@@ -1,0 +1,227 @@
+# Example calls and the decisions the example policy must give for them.
+policy: ./policy.yaml
+
+cases:
+  - name: writer can create a draft
+    call: { identity: writer, server: docs, tool: create_draft, args: { title: Notes, body: text } }
+    expect: allow
+    rule: writer-drafts
+    code: allowed
+  - name: writer can list drafts without a title
+    call: { identity: writer, server: docs, tool: list_drafts }
+    expect: allow
+    rule: writer-drafts
+  - name: writer title over 120 characters is refused
+    call:
+      identity: writer
+      server: docs
+      tool: create_draft
+      args:
+        {
+          title: 'this title is far too long for a draft title this title is far too long for a draft title this title is far too long for a draft title',
+        }
+    expect: deny
+    code: constraint_failed
+  - name: writer cannot publish
+    call: { identity: writer, server: docs, tool: publish, args: { id: d1 } }
+    expect: deny
+    rule: writers-never-publish
+    code: denied_by_rule
+  - name: release manager publish needs approval
+    call: { identity: release-manager, server: docs, tool: publish, args: { id: d1 } }
+    expect: require_approval
+    rule: release-publish
+    code: approval_required
+  - name: release manager can read a draft
+    call: { identity: release-manager, server: docs, tool: get_draft, args: { id: d1 } }
+    expect: allow
+    rule: release-read
+  - name: release manager cannot create drafts
+    call: { identity: release-manager, server: docs, tool: create_draft, args: { title: Notes } }
+    expect: deny
+    code: no_matching_rule
+  - name: delete_draft is refused by default deny
+    call: { identity: writer, server: docs, tool: delete_draft, args: { id: d1 } }
+    expect: deny
+    code: no_matching_rule
+  - name: fetching a docs page is allowed
+    call:
+      identity: writer
+      server: web
+      tool: fetch_page
+      args: { url: 'https://docs.example.test/guide' }
+    expect: allow
+    rule: fetch-docs-site
+  - name: fetching a page outside the docs site is refused
+    call:
+      identity: writer
+      server: web
+      tool: fetch_page
+      args: { url: 'https://evil.example.test/page' }
+    expect: deny
+    code: constraint_failed
+  - name: mail to the team address is allowed
+    call:
+      identity: writer
+      server: mail
+      tool: send
+      args: { to: team@example.test, subject: Hi }
+    expect: allow
+    rule: mail-team-only
+  - name: mail to another recipient is refused on the to constraint
+    call: { identity: writer, server: mail, tool: send, args: { to: other@example.test } }
+    expect: deny
+    code: constraint_failed
+  - name: mail with a cc is refused
+    call:
+      identity: writer
+      server: mail
+      tool: send
+      args: { to: team@example.test, cc: other@example.test }
+    expect: deny
+    code: constraint_failed
+  - name: mail with a bcc is refused
+    call:
+      identity: writer
+      server: mail
+      tool: send
+      args: { to: team@example.test, bcc: other@example.test }
+    expect: deny
+    code: constraint_failed
+  - name: writers see create_draft
+    visible: { identity: writer, server: docs, tool: create_draft }
+    expect: true
+  - name: writers do not see publish
+    visible: { identity: writer, server: docs, tool: publish }
+    expect: false
+  - name: release managers see publish
+    visible: { identity: release-manager, server: docs, tool: publish }
+    expect: true
+  - name: release managers do not see create_draft
+    visible: { identity: release-manager, server: docs, tool: create_draft }
+    expect: false
+  - name: third mail in one session is refused
+    sequence:
+      - call: { identity: writer, server: mail, tool: send, args: { to: team@example.test } }
+        expect: allow
+      - call: { identity: writer, server: mail, tool: send, args: { to: team@example.test } }
+        expect: allow
+        at: 5
+      - call: { identity: writer, server: mail, tool: send, args: { to: team@example.test } }
+        expect: deny
+        code: limit_exceeded
+        rule: mail-team-only
+        at: 10
+  - name: eleventh fetch in one session is refused
+    sequence:
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: allow,
+        }
+      - {
+          call:
+            {
+              identity: writer,
+              server: web,
+              tool: fetch_page,
+              args: { url: 'https://docs.example.test/a' },
+            },
+          expect: deny,
+          code: limit_exceeded,
+        }
