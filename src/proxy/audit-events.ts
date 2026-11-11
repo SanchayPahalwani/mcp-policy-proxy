@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { ProtocolError } from '@modelcontextprotocol/server';
-import type { ApprovalResult } from '../approval/types.js';
 import type { ApprovalOutcome } from '../approval/wait.js';
 import type { AuditEvent, DecisionEvent, ListEvent, OutcomeEvent } from '../audit/log.js';
 import { redact } from '../audit/redact.js';
@@ -20,14 +19,21 @@ export const CLIENT_CANCELLED: Refusal = {
   reason: 'the client gave up before the call was cleared',
 };
 
+/** The approver was asked at `requestedAt`; absent when the call never reached it. */
+export interface ApprovalStep {
+  outcome: ApprovalOutcome;
+  requestedAt?: string;
+}
+
+const INTERNAL_ERROR: Refusal = { code: 'internal_error', reason: 'policy evaluation failed' };
+
 function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefined {
   switch (outcome?.kind) {
     case 'approved':
       return undefined;
     case 'refused': {
       const { note } = outcome.result;
-      const why = typeof note === 'string' && note !== '' ? `: ${note}` : '';
-      return { code: 'approval_denied', reason: `approval was refused${why}` };
+      return { code: 'approval_denied', reason: `approval was refused${note ? `: ${note}` : ''}` };
     }
     case 'timeout':
       return {
@@ -40,7 +46,13 @@ function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefi
       return CLIENT_CANCELLED;
     case undefined:
       // Only a gate bug gets here; an unasked approval must not pass as given.
-      return { code: 'internal_error', reason: 'policy evaluation failed' };
+      return INTERNAL_ERROR;
+    default: {
+      // A new outcome kind must be handled here before it can ever mean "forward".
+      const unknown: never = outcome;
+      console.error(`mcp-policy-proxy: unknown approval outcome ${String(unknown)}`);
+      return INTERNAL_ERROR;
+    }
   }
 }
 
@@ -48,14 +60,14 @@ function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefi
  * Why a call that was decided is not forwarded, or undefined when it may be.
  * `approval` is how the wait ended, for a decision that needed one.
  */
-export function refusal(decision: Decision, approval?: ApprovalOutcome): Refusal | undefined {
+export function refusal(decision: Decision, approval?: ApprovalStep): Refusal | undefined {
   switch (decision.effect) {
     case 'allow':
       return undefined;
     case 'deny':
       return { code: decision.code, reason: decision.reason };
     case 'require_approval':
-      return approvalRefusal(approval);
+      return approvalRefusal(approval?.outcome);
     default: {
       // A new effect must be handled here before it can ever be forwarded.
       const unknown: never = decision.effect;
@@ -65,27 +77,18 @@ export function refusal(decision: Decision, approval?: ApprovalOutcome): Refusal
   }
 }
 
-// An approver is plugged-in code, so only the known fields, with the right types, reach the log.
-function approvalRecord(result: ApprovalResult): NonNullable<DecisionEvent['approval']> {
-  return {
-    approved: result.approved === true,
-    ...(typeof result.approver === 'string' && { approver: result.approver }),
-    ...(typeof result.note === 'string' && { note: result.note }),
-  };
-}
-
 export function decisionEvent(
   policy: Policy,
   call: Call,
   callId: string,
   decision: Decision,
   refused: Refusal | undefined,
-  approval?: ApprovalOutcome,
+  approval?: ApprovalStep,
 ): DecisionEvent {
   const forwarded = refused === undefined;
   // A timeout or a failed approver gave no answer, so there is nothing to record for it.
-  const answer =
-    approval?.kind === 'approved' || approval?.kind === 'refused' ? approval : undefined;
+  const outcome = approval?.outcome;
+  const answer = outcome?.kind === 'approved' || outcome?.kind === 'refused' ? outcome : undefined;
   const approved = forwarded && answer?.kind === 'approved';
   const by = answer?.result.approver;
   const approvedReason = `${decision.reason}: approved${by ? ` by ${by}` : ''}`;
@@ -103,7 +106,9 @@ export function decisionEvent(
     ...(decision.rule !== undefined && { rule: decision.rule }),
     reason: refused?.reason ?? (approved ? approvedReason : decision.reason),
     visible: decision.visible,
-    ...(answer && { approval: approvalRecord(answer.result) }),
+    ...(approval?.requestedAt !== undefined && { approval_requested_at: approval.requestedAt }),
+    // Already normalised by the wait, so it is copied as is.
+    ...(answer && { approval: { ...answer.result } }),
     forwarded,
     policy_sha256: policy.sha256,
   };

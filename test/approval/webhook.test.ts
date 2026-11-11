@@ -111,14 +111,18 @@ describe('webhook approver', () => {
     const { url } = await webhook(json(500, { approved: true }));
     const approver = webhookApprover({ url, secret: SECRET });
 
-    await expect(approver.request(PENDING, signal())).rejects.toThrow(/status 500/);
+    await expect(approver.request(PENDING, signal())).rejects.toThrow(
+      'approval webhook failed: HTTP 500',
+    );
   });
 
   it('rejects an answer without a boolean approved', async () => {
     const { url } = await webhook(json(200, {}));
     const approver = webhookApprover({ url, secret: SECRET });
 
-    await expect(approver.request(PENDING, signal())).rejects.toThrow(/approved/);
+    await expect(approver.request(PENDING, signal())).rejects.toThrow(
+      'approval webhook failed: invalid response',
+    );
   });
 
   it('rejects a body that is not JSON', async () => {
@@ -128,7 +132,9 @@ describe('webhook approver', () => {
     });
     const approver = webhookApprover({ url, secret: SECRET });
 
-    await expect(approver.request(PENDING, signal())).rejects.toThrow(/JSON/);
+    await expect(approver.request(PENDING, signal())).rejects.toThrow(
+      'approval webhook failed: invalid response',
+    );
   });
 
   it('never puts the secret in an error', async () => {
@@ -141,6 +147,28 @@ describe('webhook approver', () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect(String((error as Error).message)).not.toContain(SECRET);
+  });
+
+  it('never puts the URL in an error', async () => {
+    const urlToken = 'tok-in-the-url';
+    const statusUrl = `${(await webhook(json(500, {}))).url}?key=${urlToken}`;
+    const refused = webhookApprover({ url: statusUrl, secret: SECRET });
+    // Port 1 on loopback has no listener, so the request itself fails.
+    const unreachable = webhookApprover({
+      url: `http://127.0.0.1:1/approve?key=${urlToken}`,
+      secret: SECRET,
+    });
+
+    for (const approver of [refused, unreachable]) {
+      const error = await approver.request(PENDING, signal()).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(error?.message).toMatch(/^approval webhook failed: /);
+      expect(
+        JSON.stringify({ message: error?.message, cause: String(error?.cause) }),
+      ).not.toContain(urlToken);
+    }
   });
 
   it('rejects when the signal aborts', async () => {

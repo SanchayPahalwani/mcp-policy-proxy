@@ -5,7 +5,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/server';
 import { denyApprover, type Approver, type PendingApproval } from '../approval/types.js';
-import { awaitApproval, type ApprovalOutcome } from '../approval/wait.js';
+import { awaitApproval } from '../approval/wait.js';
 import type { AuditEvent, AuditSink } from '../audit/log.js';
 import { withSpan } from '../audit/otel.js';
 import { redact } from '../audit/redact.js';
@@ -21,6 +21,7 @@ import {
   listEvent,
   outcomeEvent,
   refusal,
+  type ApprovalStep,
   type CallProgress,
 } from './audit-events.js';
 import { deniedResult, toolNotFound, type Caller, type Gate } from './gate.js';
@@ -72,6 +73,14 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   // Under the MCP SDK client's default request timeout of 60 s, so that with default
   // settings the agent hears the refusal instead of giving up first.
   const approvalTimeoutMs = deps.approvalTimeoutMs ?? 55_000;
+  // setTimeout's ceiling: a longer delay would silently fire at once, which is no wait at all.
+  if (
+    !Number.isFinite(approvalTimeoutMs) ||
+    approvalTimeoutMs <= 0 ||
+    approvalTimeoutMs > 2_147_483_647
+  ) {
+    throw new RangeError('approvalTimeoutMs must be a number in (0, 2147483647]');
+  }
 
   const write = (event: AuditEvent): void => {
     if (!audit) return;
@@ -101,7 +110,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     progress: CallProgress,
     decision: Decision,
     signal: AbortSignal | undefined,
-    approval?: ApprovalOutcome,
+    approval?: ApprovalStep,
   ): Admission => {
     const cancelled = signal?.aborted === true;
     // Checked before the effect, so a hidden tool can never be forwarded whatever it says.
@@ -156,15 +165,16 @@ export function policyGate(deps: PolicyGateDeps): Gate {
     progress: CallProgress,
     decision: Decision,
     signal: AbortSignal | undefined,
-    outcome: ApprovalOutcome,
+    approval: ApprovalStep,
   ): Admission => {
+    const { outcome } = approval;
     if (outcome.kind === 'error') console.error('mcp-policy-proxy: approver failed', outcome.error);
     const answered: Call = { ...call, at: clock() };
     if (outcome.kind !== 'approved' || signal?.aborted) {
-      return admit(answered, callId, progress, decision, signal, outcome);
+      return admit(answered, callId, progress, decision, signal, approval);
     }
     // Decided again: other calls may have used up a limit while this one waited.
-    return admit(answered, callId, progress, decide(policy, state, answered), signal, outcome);
+    return admit(answered, callId, progress, decide(policy, state, answered), signal, approval);
   };
 
   const forwardAndRecord = async (
@@ -232,7 +242,10 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       if (decision.effect === 'require_approval' && decision.visible) {
         const pending = pendingApproval(call, callId, decision);
         const outcome = await awaitApproval(approver, pending, approvalTimeoutMs, signal);
-        admission = admitAnswered(call, callId, progress, decision, signal, outcome);
+        admission = admitAnswered(call, callId, progress, decision, signal, {
+          outcome,
+          requestedAt: pending.requested_at,
+        });
       } else {
         admission = admit(call, callId, progress, decision, signal);
       }

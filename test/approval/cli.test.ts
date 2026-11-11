@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { cliApprover } from '../../src/approval/cli.js';
+import { cliApprover, randomCode } from '../../src/approval/cli.js';
 import type { PendingApproval } from '../../src/approval/types.js';
 
 const pending = (overrides: Partial<PendingApproval> = {}): PendingApproval => ({
@@ -16,44 +16,53 @@ const pending = (overrides: Partial<PendingApproval> = {}): PendingApproval => (
   ...overrides,
 });
 
+const PROMPT_END = 'to approve, anything else to refuse: ';
+
+/** Codes `c001`, `c002`, … in request order, so a test can type the right one. */
 function terminal() {
   const input = new PassThrough();
   const output = new PassThrough();
   let text = '';
+  let codes = 0;
   output.setEncoding('utf8');
   output.on('data', (chunk: string) => (text += chunk));
   return {
     input,
     output,
-    approver: cliApprover({ input, output }),
+    approver: cliApprover({ input, output, newCode: () => `c${String(++codes).padStart(3, '0')}` }),
     text: () => text,
     prompts: () => text.split('Approval needed:').length - 1,
   };
 }
 
 const signal = () => new AbortController().signal;
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('cli approver', () => {
-  it.each(['y', 'yes', 'Y', 'YES', ' yes '])('approves on %j', async (answer) => {
+  it('approves only on the code shown for this request', async () => {
     const t = terminal();
     const result = t.approver.request(pending(), signal());
-    await expect.poll(t.text).toContain('Approve? [y/N] ');
-    t.input.write(`${answer}\n`);
+    await expect.poll(t.text).toContain('Type c001 to approve, anything else to refuse: ');
+    t.input.write(' c001 \n');
     expect(await result).toEqual({ approved: true, approver: 'cli' });
   });
 
-  it.each(['n', '', 'maybe', 'yess'])('refuses on %j', async (answer) => {
+  it.each(['y', 'yes', 'Y', '', 'c002', 'C001'])('refuses on %j', async (answer) => {
     const t = terminal();
     const result = t.approver.request(pending(), signal());
-    await expect.poll(t.text).toContain('Approve? [y/N] ');
+    await expect.poll(t.text).toContain(PROMPT_END);
     t.input.write(`${answer}\n`);
     expect(await result).toEqual({ approved: false, approver: 'cli' });
+  });
+
+  it('makes codes of four unambiguous characters', () => {
+    for (let i = 0; i < 200; i++) expect(randomCode()).toMatch(/^[a-km-np-z2-9]{4}$/);
   });
 
   it('shows who wants what, the redacted args and the rule', async () => {
     const t = terminal();
     const result = t.approver.request(pending(), signal());
-    await expect.poll(t.text).toContain('Approve? [y/N] ');
+    await expect.poll(t.text).toContain(PROMPT_END);
     t.input.write('n\n');
     await result;
 
@@ -61,8 +70,61 @@ describe('cli approver', () => {
     expect(text).toContain('Approval needed: release-manager wants docs.publish');
     expect(text).toContain('"id": 7');
     expect(text).toContain('"token": "[REDACTED]"');
-    expect(text).toContain('release-publish');
-    expect(text.endsWith('Approve? [y/N] ')).toBe(true);
+    expect(text).toContain('Rule: release-publish');
+    expect(text.endsWith(PROMPT_END)).toBe(true);
+  });
+
+  it('escapes control and bidi characters in what it prints', async () => {
+    const t = terminal();
+    const result = t.approver.request(
+      pending({
+        identity: 'ops\u001b[2K',
+        tool: 'pub‮lish',
+        rule: 'r\u0007',
+        args: { note: 'a b', emoji: '\u{1f600}' },
+      }),
+      signal(),
+    );
+    await expect.poll(t.text).toContain(PROMPT_END);
+    t.input.write('n\n');
+    await result;
+
+    const text = t.text();
+    expect(text).toContain('ops\\u{1b}[2K wants docs.pub\\u{202e}lish');
+    expect(text).toContain('Rule: r\\u{7}');
+    expect(text).toContain('"note": "a\\u{2028}b"');
+    expect(text).toContain('"emoji": "\\u{1f600}"');
+    expect([...text].every((ch) => ch === '\n' || (ch >= ' ' && ch <= '~'))).toBe(true);
+  });
+
+  it('a line typed before any request answers nothing', async () => {
+    const t = terminal();
+    t.input.write('y\n');
+    t.input.write('c001\n');
+    await tick();
+    const result = t.approver.request(pending(), signal());
+    await expect.poll(t.text).toContain(PROMPT_END);
+    await tick();
+    expect(await Promise.race([result, tick().then(() => 'pending')])).toBe('pending');
+    t.input.write('c001\n');
+    expect(await result).toEqual({ approved: true, approver: 'cli' });
+  });
+
+  it('a line typed while idle between requests answers nothing', async () => {
+    const t = terminal();
+    const first = t.approver.request(pending(), signal());
+    await expect.poll(t.prompts).toBe(1);
+    t.input.write('c001\n');
+    await first;
+
+    t.input.write('c002\n');
+    await tick();
+    const second = t.approver.request(pending(), signal());
+    await expect.poll(t.prompts).toBe(2);
+    await tick();
+    expect(await Promise.race([second, tick().then(() => 'pending')])).toBe('pending');
+    t.input.write('nope\n');
+    expect(await second).toEqual({ approved: false, approver: 'cli' });
   });
 
   it('prompts for concurrent requests one after the other', async () => {
@@ -73,12 +135,27 @@ describe('cli approver', () => {
     await expect.poll(t.prompts).toBe(1);
     expect(t.text()).toContain('"id": 1');
     expect(t.text()).not.toContain('"id": 2');
-    t.input.write('y\n');
+    t.input.write('c001\n');
     expect(await first).toEqual({ approved: true, approver: 'cli' });
 
     await expect.poll(t.prompts).toBe(2);
     expect(t.text()).toContain('"id": 2');
     t.input.write('n\n');
+    expect(await second).toEqual({ approved: false, approver: 'cli' });
+  });
+
+  it("an aborted request's code does not approve the next one", async () => {
+    const t = terminal();
+    const controller = new AbortController();
+    const first = t.approver.request(pending({ args: { id: 1 } }), controller.signal);
+    const second = t.approver.request(pending({ args: { id: 2 } }), signal());
+
+    await expect.poll(t.prompts).toBe(1);
+    controller.abort();
+    expect(await first).toEqual({ approved: false });
+
+    await expect.poll(t.prompts).toBe(2);
+    t.input.write('c001\n');
     expect(await second).toEqual({ approved: false, approver: 'cli' });
   });
 
@@ -93,7 +170,7 @@ describe('cli approver', () => {
     expect(await first).toEqual({ approved: false });
 
     await expect.poll(t.prompts).toBe(2);
-    t.input.write('y\n');
+    t.input.write('c002\n');
     expect(await second).toEqual({ approved: true, approver: 'cli' });
   });
 
@@ -112,7 +189,7 @@ describe('cli approver', () => {
     await first;
     await expect.poll(t.prompts).toBe(2);
     expect(t.text()).not.toContain('"id": 2');
-    t.input.write('y\n');
+    t.input.write('c002\n');
     expect(await third).toEqual({ approved: true, approver: 'cli' });
   });
 
@@ -120,6 +197,27 @@ describe('cli approver', () => {
     const t = terminal();
     expect(await t.approver.request(pending(), AbortSignal.abort())).toEqual({ approved: false });
     expect(t.prompts()).toBe(0);
+  });
+
+  it('refuses when the prompt cannot be written, and keeps serving', async () => {
+    const input = new PassThrough();
+    let broken = true;
+    let text = '';
+    const output = {
+      write(chunk: string) {
+        if (broken) throw new Error('terminal gone');
+        text += chunk;
+        return true;
+      },
+    } as unknown as NodeJS.WritableStream;
+    const approver = cliApprover({ input, output, newCode: () => 'abcd' });
+
+    expect(await approver.request(pending(), signal())).toEqual({ approved: false });
+    broken = false;
+    const next = approver.request(pending(), signal());
+    await expect.poll(() => text).toContain(PROMPT_END);
+    input.write('abcd\n');
+    expect(await next).toEqual({ approved: true, approver: 'cli' });
   });
 
   it('refuses when the input ends', async () => {
@@ -137,7 +235,7 @@ describe('cli approver', () => {
     const t = terminal();
     const result = t.approver.request(pending(), signal());
     await expect.poll(t.prompts).toBe(1);
-    t.input.write('y\n');
+    t.input.write('c001\n');
     await result;
     expect(t.input.destroyed).toBe(false);
     expect(t.input.writableEnded).toBe(false);

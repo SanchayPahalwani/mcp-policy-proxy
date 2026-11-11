@@ -22,27 +22,36 @@ export function webhookApprover(opts: {
       // Signed exactly as sent, so the receiver can verify the bytes it got.
       const body = JSON.stringify(pending);
       const send = opts.fetch ?? fetch;
-      const response = await send(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [SIGNATURE_HEADER]: sign(secret, body) },
-        body,
-        signal,
-        // A redirect would re-send the pending call to a host nobody configured.
-        redirect: 'manual',
-      });
+      // Messages are fixed: the URL may hold a token, and transport errors can quote it.
+      let response: Response;
+      try {
+        response = await send(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [SIGNATURE_HEADER]: sign(secret, body) },
+          body,
+          signal,
+          // A redirect would re-send the pending call to a host nobody configured.
+          redirect: 'manual',
+        });
+      } catch {
+        throw new Error('approval webhook failed: request error');
+      }
       if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error(`approval webhook answered with status ${response.status}`);
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`approval webhook failed: HTTP ${response.status}`);
       }
       let answer: unknown;
       try {
         answer = await response.json();
-      } catch (e) {
-        if (signal.aborted) throw e;
-        throw new Error('approval webhook answered with a body that is not JSON');
+      } catch {
+        throw new Error(
+          signal.aborted
+            ? 'approval webhook failed: request error'
+            : 'approval webhook failed: invalid response',
+        );
       }
       if (!isRecord(answer) || typeof answer.approved !== 'boolean') {
-        throw new Error('approval webhook answer has no boolean "approved"');
+        throw new Error('approval webhook failed: invalid response');
       }
       const result: ApprovalResult = { approved: answer.approved };
       if (typeof answer.approver === 'string') result.approver = answer.approver;

@@ -139,6 +139,7 @@ describe('approval gate', () => {
         rule: 'release-publish',
         reason: 'rule "release-publish" requires approval: approved by test',
         visible: true,
+        approval_requested_at: ISO(1_000),
         approval: { approved: true, approver: 'test' },
         forwarded: true,
         policy_sha256: EXAMPLE.sha256,
@@ -191,7 +192,11 @@ describe('approval gate', () => {
     expect(seen?.aborted).toBe(true);
     expect(calls.docs).toEqual([]);
     expect(decisions(events)).toEqual([
-      expect.objectContaining({ code: 'approval_timeout', forwarded: false }),
+      expect.objectContaining({
+        code: 'approval_timeout',
+        approval_requested_at: ISO(1_000),
+        forwarded: false,
+      }),
     ]);
   });
 
@@ -204,10 +209,10 @@ describe('approval gate', () => {
       applied: ['release-publish'],
       visible: true,
     };
-    expect(refusal(decision, { kind: 'timeout', timeoutMs: 120_000 })?.reason).toBe(
+    expect(refusal(decision, { outcome: { kind: 'timeout', timeoutMs: 120_000 } })?.reason).toBe(
       'no answer within 120 seconds',
     );
-    expect(refusal(decision, { kind: 'timeout', timeoutMs: 1_500 })?.reason).toBe(
+    expect(refusal(decision, { outcome: { kind: 'timeout', timeoutMs: 1_500 } })?.reason).toBe(
       'no answer within 1.5 seconds',
     );
   });
@@ -305,6 +310,88 @@ describe('approval gate', () => {
         }),
       ]),
     );
+  });
+
+  it('limits are not consumed by a timeout or a failed approver', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const answers: Array<() => Promise<ApprovalResult>> = [
+      () => new Promise<ApprovalResult>(() => {}),
+      () => Promise.reject(new Error('webhook down')),
+      async () => ({ approved: true }),
+    ];
+    const approver: Approver = {
+      request: () => (answers.shift() ?? (async () => ({ approved: false })))(),
+    };
+    const { proxy, calls } = await start({
+      policy: APPROVE_ONE_SEND,
+      approver,
+      approvalTimeoutMs: 30,
+    });
+    const writer = await connect(proxy, 'tok-writer');
+
+    expect(textOf(await call(writer, 'mail__send', TEAM_MAIL))).toMatch(/\(approval_timeout\)/);
+    expect(textOf(await call(writer, 'mail__send', TEAM_MAIL))).toMatch(/\(approval_error\)/);
+    expect((await call(writer, 'mail__send', TEAM_MAIL)).isError).toBeFalsy();
+    expect(calls.mail).toHaveLength(1);
+  });
+
+  it('treats a malformed answer as an approver error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const approver = {
+      request: async () => ({ approved: 'yes' }),
+    } as unknown as Approver;
+    const { proxy, calls, events } = await start({ approver });
+    const release = await connect(proxy, 'tok-release');
+
+    const result = await call(release, 'docs__publish', { id: 7 });
+    expect(textOf(result)).toBe('Denied by policy (approval_error): the approver failed');
+    expect(calls.docs).toEqual([]);
+    expect(decisions(events)[0]).not.toHaveProperty('approval');
+  });
+
+  it('treats an approver that throws synchronously as an approver error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const approver: Approver = {
+      request: () => {
+        throw new Error('not even a promise');
+      },
+    };
+    const { proxy, calls } = await start({ approver });
+    const release = await connect(proxy, 'tok-release');
+
+    const result = await call(release, 'docs__publish', { id: 7 });
+    expect(textOf(result)).toBe('Denied by policy (approval_error): the approver failed');
+    expect(calls.docs).toEqual([]);
+  });
+
+  it('keeps only known answer fields, cut to length', async () => {
+    const approver = {
+      request: async () => ({
+        approved: false,
+        approver: 'a'.repeat(300),
+        note: 'n'.repeat(900),
+        extra: 'dropped',
+      }),
+    } as unknown as Approver;
+    const { proxy, events } = await start({ approver });
+    const release = await connect(proxy, 'tok-release');
+
+    await call(release, 'docs__publish', { id: 7 });
+    expect(decisions(events)[0]?.approval).toEqual({
+      approved: false,
+      approver: 'a'.repeat(100),
+      note: 'n'.repeat(500),
+    });
+  });
+
+  it('rejects an approval timeout that is not a usable delay', () => {
+    for (const approvalTimeoutMs of [0, -1, Number.NaN, Infinity, 2_147_483_648]) {
+      expect(
+        () => policyGate({ policy: EXAMPLE, approvalTimeoutMs }),
+        String(approvalTimeoutMs),
+      ).toThrow(RangeError);
+    }
+    expect(() => policyGate({ policy: EXAMPLE, approvalTimeoutMs: 2_147_483_647 })).not.toThrow();
   });
 
   it('limits are not consumed by refused approvals', async () => {

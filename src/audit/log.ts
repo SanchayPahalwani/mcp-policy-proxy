@@ -15,6 +15,8 @@ export interface DecisionEvent {
   rule?: string;
   reason: string;
   visible: boolean;
+  /** Set for every call the approver was asked about, whatever the answer. */
+  approval_requested_at?: string;
   approval?: { approved: boolean; approver?: string; note?: string };
   forwarded: boolean;
   policy_sha256: string;

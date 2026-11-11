@@ -9,6 +9,21 @@ export type ApprovalOutcome =
   | { kind: 'cancelled' };
 
 /**
+ * The one place an approver's answer is read: each field once (a getter cannot answer
+ * twice), unknown fields dropped, and long strings cut so they cannot flood the log.
+ */
+export function normaliseAnswer(raw: unknown): ApprovalResult | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { approved, approver, note } = raw as Record<string, unknown>;
+  if (typeof approved !== 'boolean') return undefined;
+  return {
+    approved,
+    ...(typeof approver === 'string' && { approver: approver.slice(0, 100) }),
+    ...(typeof note === 'string' && { note: note.slice(0, 500) }),
+  };
+}
+
+/**
  * Asks the approver, but never waits longer than `timeoutMs` or past the client giving up:
  * an approver that ignores the abort signal is left behind, and its late answer is dropped.
  */
@@ -36,8 +51,10 @@ export async function awaitApproval(
   });
   const answer = (async (): Promise<ApprovalOutcome> => {
     try {
-      const result = await approver.request(pending, controller.signal);
-      return result.approved === true ? { kind: 'approved', result } : { kind: 'refused', result };
+      const result = normaliseAnswer(await approver.request(pending, controller.signal));
+      if (!result)
+        return { kind: 'error', error: new Error('approver answer has no boolean approved') };
+      return result.approved ? { kind: 'approved', result } : { kind: 'refused', result };
     } catch (error) {
       return { kind: 'error', error };
     }
