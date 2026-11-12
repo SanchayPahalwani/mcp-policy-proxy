@@ -127,6 +127,6 @@ example policy server for that hook that loads this repo's policy file format
 and answers with this repo's engine, added to agentgateway's examples with a
 short guide. It would give agentgateway users a default-deny YAML policy with an
 offline `check` command, and it would test whether this engine's interface
-(`decide(call, state) -> decision`) is general enough to sit behind someone
+(`decide(policy, state, call) -> decision`) is general enough to sit behind someone
 else's enforcement point. Before starting, open an issue there to confirm the
 maintainers want examples of that kind.
