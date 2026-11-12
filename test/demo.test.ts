@@ -4,10 +4,18 @@ import { runDemo } from '../scripts/demo.js';
 describe('demo', () => {
   it('prints the eight steps with what the proxy really answers', { timeout: 60_000 }, async () => {
     const lines: string[] = [];
-    await runDemo((line) => lines.push(line));
+    let tokens: string[] = [];
+    await runDemo((line) => lines.push(line), { onTokens: (t) => (tokens = t) });
     const text = lines.join('\n');
 
     for (let step = 1; step <= 8; step++) expect(text).toMatch(new RegExp(`^${step}\\. `, 'm'));
+    // Step 1: the list is filtered per identity, so only the release manager is shown publish.
+    const listed = (who: string) => lines.find((l) => l.trimStart().startsWith(`${who}:`)) ?? '';
+    expect(listed('writer')).toContain('mail__send');
+    expect(listed('writer')).not.toContain('docs__publish');
+    expect(listed('writer')).not.toContain('docs__delete_draft');
+    expect(listed('release-manager')).toContain('docs__publish');
+    expect(listed('release-manager')).not.toContain('mail__send');
     // Step 3: a denied tool is hidden, so calling it answers like a tool that does not exist.
     expect(text).toContain('Tool docs__publish not found');
     // Step 4: the refusal names the rule and the failed constraint.
@@ -28,6 +36,11 @@ describe('demo', () => {
     expect(text).toMatch(/no violations in \d+ call\(s\) across 1 file\(s\)/);
     expect(text).toContain('3 violation(s) in 5 call(s) across 1 file(s)');
     // Tokens are generated per run and never shown.
+    expect(tokens).toHaveLength(2);
+    for (const token of tokens) {
+      expect(token.length).toBeGreaterThanOrEqual(32);
+      expect(text).not.toContain(token);
+    }
     expect(text).not.toMatch(/bearer/i);
   });
 });

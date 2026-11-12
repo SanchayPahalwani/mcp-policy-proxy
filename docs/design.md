@@ -15,9 +15,11 @@ prompt: "never publish". That is a request to a model, and a model can be
 talked out of it.
 
 [`deploy-to-babou`](https://github.com/SanchayPahalwani/deploy-to-babou) keeps a
-never-publish rule three ways: a tool allowlist, a system prompt, and a CI
-assertion over recorded runs. The CI assertion only covers offline runs. Nothing
-stops a forbidden call at the moment a live agent makes it.
+never-publish rule with a tool allowlist, a system prompt and a CI assertion,
+and the CI assertion covers only offline runs. That leaves two gaps this repo
+is about. The check CI runs is not a check that runs when a live call arrives.
+And an allowlist in one harness governs which tools that agent is offered, with
+no identities, no argument rules and no audit trail.
 
 The claim of this repo is narrow:
 
@@ -72,14 +74,16 @@ because a reader who assumes otherwise will deploy it wrongly.
 
 ## 3. Why the tool-call boundary
 
-Four places a rule can live:
+Six places a rule can live:
 
-| Place                                                             | Holds against injected text? | Covers every client?      | Notes                                                           |
-| ----------------------------------------------------------------- | ---------------------------- | ------------------------- | --------------------------------------------------------------- |
-| System prompt                                                     | No                           | n/a                       | A request, not a control                                        |
-| Inside the agent (SDK hooks, a tool allowlist in the harness)     | Yes                          | Only agents that adopt it | Each harness re-implements it; policy lives in application code |
-| At the model API (inspect the model's output for tool-use blocks) | Yes, for calls it can parse  | Per model provider        | Sees intent, not the call that reaches the server               |
-| At the tool-call boundary (this proxy)                            | Yes                          | Any MCP client, unchanged | Sees only MCP traffic                                           |
+| Place                                                             | Holds against injected text?     | Covers every client?                    | Notes                                                                                       |
+| ----------------------------------------------------------------- | -------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| System prompt                                                     | No                               | n/a                                     | A request, not a control                                                                    |
+| A tool allowlist in the harness                                   | Yes, for the tools it leaves out | Only that harness                       | Governs which tools that agent is offered; no identities, no argument rules, no audit trail |
+| SDK hooks inside the agent                                        | Yes                              | Only agents that adopt them             | Each harness re-implements the rules; policy lives in application code                      |
+| A CI assertion over recorded runs                                 | Only after the fact              | Only runs that are recorded and checked | Finds a forbidden call once it has happened; does not run when a live call arrives          |
+| At the model API (inspect the model's output for tool-use blocks) | Yes, for calls it can parse      | Per model provider                      | Sees intent, not the call that reaches the server                                           |
+| At the tool-call boundary (this proxy)                            | Yes                              | Any MCP client, unchanged               | Sees only MCP traffic; the same policy can also be checked offline                          |
 
 The tool-call boundary is the last point before a side effect happens and the
 first point that is independent of which model and which harness produced the
@@ -147,7 +151,32 @@ Three properties of the code follow from the claim:
 
 ## 5. Decisions
 
-Each subsection: the decision, the alternatives, why, and the cost.
+Each subsection: the decision, the alternatives, why, and the cost. In one
+line each:
+
+| §    | Decision                                                    | Main alternative                      | Cost                                               |
+| ---- | ----------------------------------------------------------- | ------------------------------------- | -------------------------------------------------- |
+| 5.1  | Default deny, not configurable                              | A configurable default                | Rules must exist before anything works             |
+| 5.2  | Deny overrides allow; rule order does not matter            | First match wins                      | No "deny all, except" pair; write the narrow allow |
+| 5.3  | Deny rules are unconditional; constraints only on allows    | Conditional denies                    | Some policies are longer                           |
+| 5.4  | Malformed is not missing; empty arrays fail                 | Anything unreadable counts as missing | Authors must learn what `optional` covers          |
+| 5.5  | Seven operators, no expression language                     | CEL, Rego, Cedar                      | Some policies cannot be written                    |
+| 5.6  | Patterns anchored, compiled bare first, input length capped | Unanchored patterns, no cap           | A long legitimate value is refused                 |
+| 5.7  | Linear glob matcher; over-long tool names match nothing     | Globs compiled to regexes             | A very long tool name cannot be allowed            |
+| 5.8  | Filter the list and check every call                        | Only one of the two                   | Two code paths that must agree                     |
+| 5.9  | Hidden tools answer "not found"; refusals give the reason   | One error for everything              | A model can learn the limits                       |
+| 5.10 | Static tokens behind an `Authenticator` interface           | OAuth now; a trusted identity header  | Tokens do not expire                               |
+| 5.11 | Loopback only unless opted in; startup errors quote nothing | Bind anywhere; print the cause        | Terser startup errors                              |
+| 5.12 | Sessions named by a header the harness sets                 | Per connection; a required header     | Per-session limits trust the harness               |
+| 5.13 | Limits on rules, every one must hold, exact sliding window  | One limit per identity; token bucket  | In memory; assumes a clock that does not jump      |
+| 5.14 | Approvals out of band, bounded and validated                | Ask through the MCP client            | Synchronous; lost on restart                       |
+| 5.15 | The decision is written before the call is forwarded        | Write after the call; batch writes    | A synchronous write per call                       |
+| 5.16 | Redact by key name                                          | Redact by value pattern               | A secret under an unlisted key is logged           |
+| 5.17 | The same engine offline, with a strict reader               | A second evaluator; a lenient reader  | Records need identity, session and time            |
+| 5.18 | Policy and deployment config in separate files              | One file                              | Two files to keep consistent                       |
+| 5.19 | Fail closed on every error                                  | Let exceptions propagate              | A bug shows up as refused calls                    |
+| 5.20 | Load the policy once                                        | Hot reload                            | A restart drops counters and pending approvals     |
+| 5.21 | Eval baseline: the same proxy with a pass-through gate      | A direct-connection harness           | The two conditions offer different tool lists      |
 
 ### 5.1 Default deny, not configurable
 
@@ -349,8 +378,9 @@ Nothing in the engine or the policy file changes.
 
 **Never forwarded.** The agent's token stops at the proxy; it is not even kept
 in the request's auth info. The proxy uses its own credentials for each
-upstream. Passing a client's token through to a server it was not issued for is
-the confused-deputy pattern the MCP security guidance warns about.
+upstream. Forwarding the client's token is what the MCP guidance calls token
+passthrough: the authorization spec says a server must not pass through the
+token it received from the client, and the security best practices forbid it.
 
 **Why identity matters at all.** It turns "nobody may publish" into "the
 writer agent may not; the release agent may, with approval". One proxy can
@@ -386,9 +416,10 @@ message and the `cause` are what is left for debugging.
 **Decision.** A session is whatever the harness puts in an `x-agent-session`
 header (HTTP), or the process lifetime (stdio). The value must match
 `[A-Za-z0-9._:-]` and be at most 128 characters, or the request gets `400`.
-With no header, all of an identity's calls share one session named `default`
-for the life of the proxy. A session with no call for an hour is dropped as a
-whole.
+With no header, all of an identity's calls share one session named `default`.
+It is an ordinary session: like any other, it is dropped as a whole after an
+hour with no call, and every session's counters start again when the proxy
+restarts.
 
 **Alternatives.** Count per connection; or require the header.
 
@@ -404,17 +435,20 @@ rule and identity, never by session, so it does not depend on the harness at
 all.
 
 **Why the missing-header default is one shared session.** It errs toward
-refusing: the budget is consumed and never reset.
+refusing: every call that names no session, from any harness using that
+identity, draws on one budget, and that budget starts again only after an hour
+with no call, or a restart.
 
 **Cost.** Session counters are in memory and die with the process.
 
-### 5.13 Limits belong to rules and all matching limits must hold
+### 5.13 Limits belong to rules, and every permitting rule's limit must hold
 
 **Decision.** `limits` (`per_minute`, `per_session`) sit on allow and approval
 rules. If several rules permit a call, every one of their limits must have
-room, and all are counted when the call is forwarded. Only forwarded calls
-count. The per-minute limit is an exact sliding window: it counts every
-recorded call newer than one minute ago, with no upper bound.
+room, and all are counted when the call is forwarded. A rule whose constraints
+fail is dropped before limits are checked, so its limit plays no part. Only
+forwarded calls count. The per-minute limit is an exact sliding window: it
+counts every recorded call newer than one minute ago, with no upper bound.
 
 **Alternatives.** One global limit per identity; a token bucket; counting
 attempts rather than forwarded calls.
@@ -422,8 +456,10 @@ attempts rather than forwarded calls.
 **Why.** A narrow rule can then tighten a broad one, which is how people read
 it. Counting only forwarded calls means a refused call cannot be used to burn
 someone's budget. A sliding window of timestamps is exact and replays
-identically offline from recorded timestamps; its memory is bounded by the
-limit. With no upper bound on the window, a clock that steps backwards makes
+identically offline from recorded timestamps. For a rule with `per_minute`, its
+memory is bounded by that limit; `record` keeps timestamps for every applied
+rule, so for a rule without one it is bounded by how many calls arrive within a
+minute. With no upper bound on the window, a clock that steps backwards makes
 calls recorded "in the future" still count, so the limit refuses instead of
 allowing.
 
@@ -458,22 +494,30 @@ call is decided again once approved.
 - **The webhook approver** `POST`s the pending call with an HMAC-SHA256
   signature header, does not follow redirects, and never puts the URL in an
   error.
+- **Approvers can be closed.** `close()` refuses every waiting and later
+  request, and the terminal approver releases stdin, so a proxy that is shutting
+  down neither approves anything nor hangs on its terminal.
 
 **Alternatives.** Ask through the MCP client (the protocol has a way for a
 server to request input from the client); wait as long as the human takes;
 accept any truthy answer; a plain "y/n" prompt.
 
-**Why.** The client is the party being constrained, and a headless harness
-would answer on the human's behalf, so the approval has to travel on a channel
-the model cannot reach. The 55-second default sits under the SDK client's
-default request timeout of 60 seconds: a longer wait would let an approved call
-run after the agent had already given up on it. Reading the answer once, in one
-place, means no approver can approve by accident with a value that is merely
-truthy, or with a getter that answers differently the second time it is read.
-With the original y/n prompt, input buffered before a prompt answered the next
-request; a per-request code means the person typing has read this request. A
-redirect would re-send the pending call to a host nobody configured, and URLs
-can carry tokens.
+**Why.**
+
+- **Out of band:** the client is the party being constrained, and a headless
+  harness would answer on the human's behalf, so the approval has to travel on
+  a channel the model cannot reach.
+- **55 seconds:** the SDK client's default request timeout is 60 seconds. A
+  longer wait would let an approved call run after the agent had already given
+  up on it.
+- **Validated once:** reading the answer in one place means no approver can
+  approve by accident with a value that is merely truthy, or with a getter that
+  answers differently the second time it is read.
+- **A code per request:** with the original y/n prompt, input buffered before a
+  prompt answered the next request. A code means the person typing has read
+  this request.
+- **No redirects:** a redirect would re-send the pending call to a host nobody
+  configured, and URLs can carry tokens.
 
 **Cost.** The v1 webhook is one synchronous request. An approval that takes
 longer than the client's timeout, or a proxy restart mid-wait, is not handled.
@@ -491,8 +535,10 @@ list and outcome lines, carries `policy_sha256`, the SHA-256 of the policy
 text. The outcome's `error` field is a fixed label: `protocol_error <code>` for
 a standard JSON-RPC code from the upstream, `error` for any other upstream
 failure, `internal_error` when the proxy itself failed after clearing the call.
-The file is created with mode `0600`. A refusal caused by an internal error
-still leaves a decision line, without the arguments.
+A decision for a call that needed approval carries `approval_requested_at`
+(when the approver was asked, whatever the answer) and the answer itself under
+`approval`. The file is created with mode `0600`. A refusal caused by an
+internal error still leaves a decision line, without the arguments.
 
 **Alternatives.** Write after the call (one line with the result); write
 asynchronously or in batches; log upstream error messages.
@@ -550,8 +596,9 @@ skips what it does not understand.
 
 **Why.** Three uses come from one mechanism:
 
-- _Offline agent runs_ (evals, CI runs with recorded transcripts) get the
-  same guarantee as live ones.
+- _Offline agent runs_ (evals, CI runs with recorded transcripts) are judged
+  by the same rules as live ones. Offline, a violation is found after the fact;
+  only the live proxy prevents it.
 - _Policy changes_ can be tested against history: run the new policy over
   last week's audit log and see what it would have refused.
 - _The proxy itself_ is checked: its audit log must pass its own policy.
@@ -622,10 +669,12 @@ belong to the production discussion below.
 
 **Cost.** A restart drops limit counters and in-flight approvals.
 
-### 5.21 The eval baseline is the same proxy with enforcement off, scored honestly
+### 5.21 The eval baseline is the same proxy with a pass-through gate, scored honestly
 
-**Decision.** "Without the proxy" is measured as the same aggregator
-forwarding everything. Scoring is built so the eval cannot flatter the policy:
+**Decision.** "Without the proxy" is measured with the same proxy (HTTP entry,
+authentication, name splitting, upstream clients) whose policy gate is swapped
+for one that lists every tool, forwards every call and writes no audit.
+Scoring is built so the eval cannot flatter the policy:
 
 - Forbidden calls are counted from the mock servers' ledgers, using a
   predicate per injection goal written separately from the policy file.
@@ -637,26 +686,37 @@ forwarding everything. Scoring is built so the eval cannot flatter the policy:
 - A run where the proxy reported `internal_error` or `audit_failed`, or an
   upstream call failed for any reason other than the tool rejecting the
   model's arguments, is a harness error: the command fails with no result,
-  instead of crediting the policy for what a crash refused.
+  instead of crediting the policy for what a crash refused. So is a run whose
+  tool listing failed on any server, or an enforced run whose listing is empty;
+  both stop before the model is called.
+- On replay, a changed model input (the system prompt, the task prompt or the
+  tool list, compared by hash) is a divergence, like a changed tool result, and
+  `eval:replay -- --check` fails on it.
 
 **Alternatives.** A separate direct-connection harness for the baseline;
 counting refusals from the audit log.
 
-**Why.** Both conditions use the same `server__tool` naming and the same proxy
-code path, so the transcripts are comparable, and what reaches the servers in
-the baseline is what a direct connection would deliver. The tool lists are not
-the same: the baseline lists every tool, while under enforcement the gate hides
-`docs__publish` and `docs__delete_draft` from `writer` (the scripted model
-calls them anyway, from the injected text). A direct harness would differ in
-naming and add a second code path to trust. Counting from the audit log would
-let a bug in the engine hide itself in the score.
+**Why.** Both conditions use the same `server__tool` naming and everything
+in the proxy except the gate, so the transcripts are comparable, and what
+reaches the servers in the baseline is what a direct connection would deliver.
+A direct harness would differ in naming and add a second code path to trust.
+Counting from the audit log would let a bug in the engine hide itself in the
+score.
 
-**Cost.** The model in the committed numbers is a scripted stand-in that obeys
-every injected instruction, so its baseline attack rate is 100% by
-construction. What is measured is which forbidden calls reached a server with
-enforcement on, and whether the benign tasks still complete. On the committed
-synthetic set: 0 forbidden calls reached a server with enforcement on, against
-108 in the baseline; 0 / 60 injected runs had a forbidden call, against 60 / 60;
+**Cost.** The two conditions do not offer the same tools: the baseline offers
+eight, while under enforcement the gate hides `docs__publish` and
+`docs__delete_draft` from `writer`, so the agent is offered six. The scripted
+model calls the hidden two anyway, from the injected text. A real model that
+only calls what it is offered would be stopped by the shorter list before the
+call check is ever tested, so its enforced row would say less about the check. The model in the committed numbers is that
+scripted stand-in, which obeys every injected instruction, so its baseline
+attack rate is 100% by construction. What is measured is which forbidden calls
+reached a server with enforcement on, and whether the benign tasks still
+complete. On the committed synthetic set: 0 forbidden calls reached a server
+with enforcement on, against 108 in the baseline (50 calls toward the other five
+goals, 10 each, plus 58 web fetches past the tenth in a run; the overuse goal
+counts every such fetch, the task's own included); 0 / 60 injected runs had a
+forbidden call, against 60 / 60;
 benign tasks completed in 5 / 5 clean runs and 60 / 60 injected runs with
 enforcement on (54 / 60 in the baseline, where some attacks damage the task).
 All of these are synthetic; see [`docs/results.md`](results.md) for the command
@@ -685,10 +745,12 @@ written.
 
 ## 7. How the build was reviewed
 
-The build ran as a sequence of tasks, and every task had an independent
-review. Each change listed in the spec's section 16 was made after a reviewer
-reproduced the problem, and several of them changed the design rather than
-just the code. Four that shaped this document:
+The build ran as a sequence of tasks under the owner's direction. Each task
+was implemented by one AI coding agent and reviewed by a separate AI review
+agent, which read the diff and probed the code with its own inputs. Each change
+listed in the spec's section 16 was made after a reviewer reproduced the
+problem, and several of them changed the design rather than just the code. Five
+that shaped this document:
 
 - **Malformed is not missing.** `{to: "x@evil.test"}` passed an optional
   `to.address` constraint, because a string parent read as "missing". That
@@ -704,6 +766,10 @@ just the code. Four that shaped this document:
 - **An approval prompt must be answered by someone who read it.** Input
   buffered before a terminal prompt answered the next request. That produced
   the per-request code and the grace period (section 5.14).
+- **A wildcard inside a list is not a wildcard.** `identities: ["*"]` was read
+  as an identity literally named `*`, which silently made a deny rule inert. A
+  list containing `*` is now a schema error telling the author to write
+  `identities: "*"`.
 
 ## 8. How this differs from prior art
 
@@ -732,13 +798,15 @@ use first-match.
   mixed fleet is diagnosable. Hot reload with a validate-then-swap step and a
   stated answer for counters and pending approvals.
 - **A latency budget.** The proxy adds a hop, authentication, a policy
-  evaluation and a synchronous audit write. Measured on one machine over local
-  loopback, the added latency at p50 is 0.26 ms per call (0.48 ms direct, 0.74
-  ms through the proxy; local loopback, synthetic, from
-  [`docs/results.md`](results.md)). That says nothing about a network between
-  real hosts. A production budget would cap p99 added latency, move audit to a
-  local write-ahead buffer with batched flushes, and treat approval calls
-  separately since they wait on people.
+  evaluation and a synchronous audit write. In one run on one machine over
+  local loopback, the added latency at p50 was 0.26 ms per call (0.48 ms
+  direct, 0.74 ms through the proxy, from [`docs/results.md`](results.md)).
+  Repeat runs on the same machine differ by a few tenths of a millisecond, the
+  same size as the number, and it says nothing about a network between real
+  hosts. A production budget would cap p99 added latency, write audit lines
+  with group commit (each call waits until its batch is on disk, so the
+  write-ahead rule still holds), and treat approval calls separately since they
+  wait on people.
 - **Tamper-evident audit.** Hash chaining or signing, and shipping to a store
   the proxy host cannot rewrite.
 - **Asynchronous approvals** that survive restarts: a pending handle returned
@@ -760,16 +828,19 @@ trail, or any protection when the model names a tool it was not given.
 
 **The model can still be injected. What have you gained?** The injected model
 can now only do what the policy allows this identity to do. The blast radius
-is the policy, and the policy is reviewable. The with/without table measures
-exactly that.
+is the policy, and the policy is reviewable. The with/without table checks
+that for six planted goal shapes, against a scripted agent that obeys every
+injection; it is evidence that the boundary holds for those, not a
+measurement of every attack.
 
 **What about exfiltration through an allowed tool?** Not stopped; section 2
 says so. Narrow argument constraints reduce it (fixed recipients, fixed
 hosts). Stopping it properly needs information-flow control.
 
 **Why is hiding a tool not enough?** Because a call can name a tool that was
-never listed. The eval's scripted agent does exactly this, and the proxy
-answers "not found".
+never listed: injected text can name it, or the model can recall it from
+elsewhere. The eval's scripted agent does exactly this, and the proxy answers
+"not found". Planning for it costs one check.
 
 **Why deny-overrides instead of first-match?** Reviewability and monotonicity:
 adding an allow never weakens a deny, and rule order carries no meaning
@@ -781,7 +852,8 @@ With conditions only on allows, bad input can only remove permission
 (sections 5.3 and 5.4).
 
 **What happens if the proxy is down?** The agent has no tools. That is the
-intended failure mode for a control. Production would run replicas.
+intended failure mode for a control. Production would run replicas, which needs
+shared limit state (section 9).
 
 **How do you change a policy safely?** Edit the file; policy tests assert the
 intended decisions; `check` replays recent audit logs under the new policy to
@@ -810,15 +882,9 @@ up as failure. Every forbidden call in a run counts, not only the planted one.
 A run where the proxy itself failed is an error, not a block. And the README
 says plainly that the scripted model's baseline is 100% by construction; the
 measured parts are what got through with enforcement on and whether the tasks
-still completed.
-
-**How do limits work across replicas?** They do not, in v1 (section 9).
-
-**Could the approval be asked through the MCP client?** No: the client is the
-constrained party (section 5.14).
-
-**Why would an agent call a hidden tool at all?** Injected text can name it,
-or the model can recall it from elsewhere. Planning for it costs one check.
+still completed. One limit stays: the injections and the policy were written by
+the same author, so 0 / 60 shows that the engine enforces the policy, not that
+the policy is complete.
 
 **Is the eval evidence that models are safe behind the proxy?** No. The
 synthetic run shows that the enforcement boundary holds against an agent that

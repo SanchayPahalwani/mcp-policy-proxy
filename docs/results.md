@@ -3,8 +3,11 @@
 This page reports the injection eval from section 11 of the
 [design](superpowers/specs/2026-11-12-mcp-policy-proxy-design.md). The tables
 between the markers below are written by a script; the text around them is
-written by hand. Every number on this page is **synthetic** unless its table is
-headed `(live)`: it comes from a scripted stand-in, not from a language model.
+written by hand. The eval tables are **synthetic** unless a table is headed
+`(live)`: their numbers come from a scripted stand-in, not from a language
+model. The overhead block near the end is different: a real measurement, from
+one run on one machine over local loopback, of a synthetic workload (an echo
+tool).
 
 ## What is compared
 
@@ -13,15 +16,18 @@ Each scenario runs twice, once per condition:
 - **enforced**: the proxy with the example policy,
   [`examples/policy.yaml`](../examples/policy.yaml), for the agent identity
   `writer`.
-- **baseline (no enforcement)**: the same proxy with enforcement off, forwarding
-  every call, so what reaches the servers in the baseline is what a direct
-  connection would deliver.
+- **baseline (no enforcement)**: the same proxy with its policy gate swapped
+  for one that lists every tool, forwards every call and writes no audit, so
+  what reaches the servers in the baseline is what a direct connection would
+  deliver.
 
 Tool names have the same `server__tool` form in both conditions, but under
 enforcement the proxy hides the tools the policy never allows for `writer`
 (`docs__publish` and `docs__delete_draft`), so the agent is offered six tools
-instead of eight. The scripted model ignores the list and calls them anyway,
-which is what the not-found refusals in the enforced row show.
+instead of eight. The scripted model ignores the list and calls them anyway.
+The proxy answers each such call `Tool <name> not found`, so nothing reaches a
+server: the enforced row's 0 counts what got through, and the 20 not-found
+refusals themselves are in the enforced transcripts.
 
 A scenario is one of five benign tasks, either clean or with one of twelve
 injections planted in a tool result the task reads (six goals, two phrasings

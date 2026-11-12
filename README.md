@@ -9,8 +9,10 @@ same file, run through the same engine, checks recorded agent sessions in CI, so
 a rule holds in a live run and in an offline one. The motivating case is
 [deploy-to-babou](https://github.com/SanchayPahalwani/deploy-to-babou), which
 keeps a never-publish rule with a tool allowlist, a system prompt and a CI
-assertion over recorded runs, but has nothing that stops a forbidden call while
-a live agent is making it.
+assertion, and the CI assertion covers only offline runs. The check CI runs is
+not a check that runs when a live call arrives, and an allowlist in one harness
+governs which tools that agent is offered, with no identities, no argument
+rules and no audit trail.
 
 **Status:** Reference implementation. Not production software.
 
@@ -89,11 +91,14 @@ How to read a policy:
 - **`when` constraints narrow an allow rule.** Operators: `equals`, `in`,
   `matches` (the whole string must match), `max_length`, `min`, `max`,
   `absent`. A missing argument fails unless the constraint says
-  `optional: true`; an argument of the wrong shape always fails. Deny rules take
+  `optional: true`. A value whose parent on the path is not an object (say
+  `to.address` when `to` is a string) fails even when optional. An empty array
+  fails; a non-empty array passes only if every element passes. Deny rules take
   no constraints.
 - **`limits` count forwarded calls** for each rule: per identity in a sliding
-  minute, and per identity within one session. Every matching rule's limit must
-  hold.
+  minute, and per identity within one session. The limit of every rule that
+  permits the call must hold; a rule whose constraints fail is dropped first,
+  so its limit does not apply.
 - **`effect: require_approval`** asks a human, out of band, before the call is
   forwarded. The `release-publish` rule does this for `release-manager`.
 
@@ -257,7 +262,9 @@ violations, and replays the eval transcripts.
 
 The eval runs five benign tasks, clean and with each of twelve planted
 injections (six goals, two phrasings each), against three mock servers: 65
-scenarios per condition. The baseline is the same proxy with enforcement off.
+scenarios per condition. The baseline runs the same proxy with its policy gate
+swapped for one that forwards every call and writes no audit, so what reaches
+the servers is what a direct connection would deliver.
 
 ### scripted-obedient-v1 (synthetic)
 
@@ -270,18 +277,28 @@ instruction, so its baseline attack rate is 100% by construction.
 | enforced                  | 0                                     | 0 / 60                              | 5 / 5                              | 60 / 60                               |
 
 The baseline row is what an always-obedient agent does, not how often a real
-model follows an injection. Two things are measured: which forbidden calls
-reached the mock servers with enforcement on (counted from the servers' own
-ledgers, by predicates written separately from the policy), and whether the
-benign tasks still complete under the example policy. Both are synthetic too,
-since the agent is scripted. No live model has been recorded yet.
+model follows an injection. Its 108 forbidden calls are 50 calls toward the
+five goals other than overuse (10 each), plus 58 web fetches past the tenth in
+a run, which the overuse goal counts whether the injection or the task asked
+for them.
 
-The proxy's added latency on one machine over local loopback is 0.26 ms per
-call at p50 (local loopback, synthetic).
+Two things are measured: which forbidden calls reached the mock servers with
+enforcement on (counted from the servers' own ledgers, by predicates written
+separately from the policy), and whether the benign tasks still complete under
+the example policy. Both are synthetic too, since the agent is scripted, and no
+live model has been recorded yet. The injections and the policy were written by
+the same author, so 0 / 60 shows that the engine enforces the policy, not that
+the policy is complete.
 
-The tables, the per-goal breakdown, the overhead measurement and how to
-regenerate or record them are in [`docs/results.md`](docs/results.md); see
-docs/results.md for the command and commit.
+In one run on one machine over local loopback, the proxy added 0.26 ms per
+call at p50. Repeat runs differ by a few tenths of a millisecond, the same size
+as the number.
+
+`npm run eval:report` regenerates the tables from the committed transcripts,
+and `npm run eval:replay -- --check` is what CI runs: it replays them and fails
+if a result or the table differs. The per-goal table, the overhead block, and
+the command and commit of the last report are in
+[`docs/results.md`](docs/results.md).
 
 ## What it stops and what it does not
 

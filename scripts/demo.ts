@@ -76,7 +76,12 @@ function readAudit(path: string): AuditEvent[] {
     .map((line) => JSON.parse(line) as AuditEvent);
 }
 
-export async function runDemo(out: (line: string) => void): Promise<void> {
+export interface DemoOptions {
+  /** Hands over the run's tokens, so a test can check that none of them is printed. */
+  onTokens?: (tokens: string[]) => void;
+}
+
+export async function runDemo(out: (line: string) => void, opts: DemoOptions = {}): Promise<void> {
   const say = (...lines: string[]) => lines.forEach((line) => out(line));
   const heading = (n: number, title: string) => say('', `${n}. ${title}`);
   const indent = (text: string) => text.split('\n').map((line) => `   ${line}`);
@@ -96,6 +101,7 @@ export async function runDemo(out: (line: string) => void): Promise<void> {
       writer: randomBytes(24).toString('base64url'),
       release: randomBytes(24).toString('base64url'),
     };
+    opts.onTokens?.([tokens.writer, tokens.release]);
     const approver = fixedApprover(({ identity, server, tool, args, rule }) => {
       say(
         `   approver: approved ${identity} ${server}.${tool} ${JSON.stringify(args)} (rule ${rule})`,
