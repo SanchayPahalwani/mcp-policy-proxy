@@ -5,9 +5,14 @@ import { loadConfig } from '../config/schema.js';
 import { startFromConfig } from '../config/start.js';
 import { codeOf, messageOf } from '../util.js';
 
-export function serveArgs(args: string[]): { config: string } | undefined {
+export function serveArgs(args: string[]): { config: string } | 'help' | undefined {
   try {
-    const { values } = parseArgs({ args, options: { config: { type: 'string' } }, strict: true });
+    const { values } = parseArgs({
+      args,
+      options: { config: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      strict: true,
+    });
+    if (values.help) return 'help';
     return values.config === undefined ? undefined : { config: values.config };
   } catch {
     return undefined;

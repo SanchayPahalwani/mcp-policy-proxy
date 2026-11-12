@@ -295,6 +295,8 @@ describe('unexpected arguments and help', () => {
   it('prints usage to stdout and exits 0 for --help or -h as an option', async () => {
     for (const argv of [
       ['--help'],
+      ['serve', '--help'],
+      ['serve', '-h'],
       ['-h'],
       ['check', '--help'],
       ['check', '-h'],

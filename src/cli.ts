@@ -52,6 +52,10 @@ export async function main(
     io.stderr.write(USAGE);
     return 2;
   }
+  if (serveOptions === 'help') {
+    io.stdout.write(USAGE);
+    return 0;
+  }
   return serve(serveOptions.config, io);
 }
 
