@@ -1,6 +1,13 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AuditEvent } from '../../src/audit/log.js';
+import { checkSessions } from '../../src/check/check.js';
+import { readSessionFile } from '../../src/check/sessions.js';
+import { loadPolicy } from '../../src/policy/load.js';
 import { Upstreams } from '../../src/proxy/upstreams.js';
 import { scriptedModel } from '../../eval/agent/scripted.js';
 import {
@@ -250,5 +257,47 @@ describe('runAll', () => {
     expect(enforced.filter((r) => r.task_completed)).toHaveLength(65);
     expect(sum(enforced)).toBe(0);
     expect(runs.every((r) => r.transcript.ended === 'end')).toBe(true);
+  });
+});
+
+describe('live and offline agree', () => {
+  it(
+    'finds no violation in the audit log of any enforced run, under the policy that served it',
+    { timeout: 120_000 },
+    async () => {
+      const policy = loadPolicy(
+        fileURLToPath(new URL('../../examples/policy.yaml', import.meta.url)),
+      );
+      const dir = mkdtempSync(join(tmpdir(), 'eval-audit-'));
+      try {
+        const runs = await runAll(['enforced'], scriptedModel);
+        expect(runs).toHaveLength(65);
+        let forwarded = 0;
+        for (const run of runs) {
+          const events = run.audit;
+          expect(events, run.scenario).toBeDefined();
+          // Through the same file reader `check` uses, so the shape on disk is what is tested.
+          const path = join(dir, `${run.scenario}.jsonl`);
+          writeFileSync(path, events!.map((e) => `${JSON.stringify(e)}\n`).join(''));
+          const records = readSessionFile(path);
+          forwarded += records.length;
+          expect(checkSessions(policy, [records]).violations, run.scenario).toEqual([]);
+          // Every call the servers saw is a forwarded record, and no other.
+          expect(records.length, run.scenario).toBe(run.ledger.length);
+        }
+        expect(forwarded).toBeGreaterThan(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('keeps the audit events out of a serialised run', async () => {
+    const run = await runScenario(scenario('t1+clean'), 'enforced', scriptedModel);
+    expect(run.audit?.length).toBeGreaterThan(0);
+    expect(JSON.stringify(run)).not.toContain('policy_sha256');
+    expect(Object.keys(run)).not.toContain('audit');
+    const baseline = await runScenario(scenario('t1+clean'), 'baseline', scriptedModel);
+    expect(baseline.audit).toBeUndefined();
   });
 });

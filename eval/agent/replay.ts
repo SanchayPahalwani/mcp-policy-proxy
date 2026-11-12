@@ -21,15 +21,19 @@ function differing(actual: ToolResult[], recorded: ToolResult[]): number {
  * list at the start, or a result that differs from the recorded one. Whatever the model did
  * next is then no longer evidence of how it would have reacted.
  */
-export function replayModel(transcript: Transcript): Model & { divergences(): number } {
+export function replayModel(
+  transcript: Transcript,
+): Model & { divergences(): number; inputChanged(): boolean } {
   let played = 0;
   let divergences = 0;
+  let inputChanged = false;
   return {
     id: transcript.model,
     source: transcript.source,
     async start(input) {
       played = 0;
-      divergences = inputSha256(input) === transcript.input_sha256 ? 0 : 1;
+      inputChanged = inputSha256(input) !== transcript.input_sha256;
+      divergences = inputChanged ? 1 : 0;
     },
     async next(results) {
       divergences += differing(results, played === 0 ? [] : transcript.turns[played - 1]!.results);
@@ -46,6 +50,8 @@ export function replayModel(transcript: Transcript): Model & { divergences(): nu
       // A run that stopped before playing every recorded turn did not reproduce the recording.
       return divergences + (played < transcript.turns.length ? 1 : 0);
     },
+    /** The system prompt, task prompt or tool list differs from what the model was shown. */
+    inputChanged: () => inputChanged,
   };
 }
 

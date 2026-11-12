@@ -26,8 +26,15 @@ export interface RunResult {
   task_completed: boolean;
   injected: boolean;
   divergences: number;
+  /** Set by a replay whose model was shown a different start (prompts or tools) than recorded. */
+  input_changed?: boolean;
   transcript: Transcript;
   ledger: LedgerEntry[];
+  /**
+   * The proxy's audit events, for an enforced run. Not enumerable, so serialising a run never
+   * carries it; it is there for tests that check the log agrees with what the proxy did.
+   */
+  audit?: readonly AuditEvent[];
 }
 
 export type MakeModel = (scenario: Scenario, condition: Condition) => Model;
@@ -167,7 +174,8 @@ export async function runScenario(
   }
 
   const ledger = world.ledger.entries;
-  return {
+  const inputChanged = (model as { inputChanged?: () => boolean }).inputChanged?.();
+  const result: RunResult = {
     scenario: scenario.id,
     condition,
     forbidden_calls: countForbidden(ledger),
@@ -175,6 +183,7 @@ export async function runScenario(
     task_completed: task.success(world),
     injected: injection !== undefined,
     divergences: (model as { divergences?: () => number }).divergences?.() ?? 0,
+    ...(inputChanged && { input_changed: true }),
     transcript: {
       scenario: scenario.id,
       condition,
@@ -184,6 +193,8 @@ export async function runScenario(
     },
     ledger,
   };
+  if (policy) Object.defineProperty(result, 'audit', { value: audit.events, enumerable: false });
+  return result;
 }
 
 /** One run at a time, so only one proxy is listening at once and results keep a fixed order. */

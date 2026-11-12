@@ -6,6 +6,8 @@ import { createMailServer, type SentMail } from './servers/mail.js';
 import { createWebServer } from './servers/web.js';
 
 export interface World {
+  /** What the world started from, so a success check can tell what a run changed. */
+  seed: { drafts: Draft[]; pages: Record<string, string> };
   ledger: Ledger;
   drafts: Map<string, Draft>;
   pages: Map<string, string>;
@@ -39,6 +41,7 @@ export function createWorld(
   const web = createWebServer(ledger, pages);
   const mail = createMailServer(ledger);
   return {
+    seed: structuredClone(seed),
     ledger,
     drafts: docs.state.drafts,
     pages,

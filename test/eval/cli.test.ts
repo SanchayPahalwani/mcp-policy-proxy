@@ -222,8 +222,12 @@ describe('eval cli', () => {
       });
       const r = await cli(['replay', '--check'], { root });
       expect(r.code).toBe(1);
-      expect(r.stderr).toMatch(/divergence: synthetic baseline t1\+clean/);
-      expect(r.stderr).toMatch(/divergence: synthetic enforced t1\+clean/);
+      for (const condition of ['baseline', 'enforced']) {
+        expect(r.stderr).toContain(
+          `divergence: synthetic ${condition} t1+clean: the model's input changed\n`,
+        );
+      }
+      expect(r.stderr).not.toContain('result(s) differ');
     },
   );
 
@@ -237,7 +241,8 @@ describe('eval cli', () => {
     writeFileSync(path, readFileSync(path, 'utf8').replace('RELEASE-32', 'RELEASE-99'));
     const r = await cli(['replay', '--check'], { root });
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/divergence/);
+    expect(r.stderr).toMatch(/divergence: synthetic enforced t1\+clean: \d+ result\(s\) differ/);
+    expect(r.stderr).not.toContain("the model's input changed");
     // A report from a diverging replay would publish numbers the recordings do not support.
     expect((await cli(['report'], { root })).code).toBe(1);
   });
@@ -253,6 +258,29 @@ describe('eval cli', () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('t1+clean appears twice');
   });
+
+  it(
+    'exits 2 when the two files of a set cover different scenarios',
+    { timeout: 30_000 },
+    async () => {
+      const root = sandbox();
+      expect(
+        (await cli(['record', '--model', 'scripted', '--only', 't1+clean'], { root })).code,
+      ).toBe(0);
+      const path = set(root, 'synthetic', 'enforced');
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace('"scenario":"t1+clean"', '"scenario":"t2+clean"'),
+      );
+      for (const command of [['replay'], ['replay', '--check'], ['report']]) {
+        const r = await cli(command, { root });
+        expect(r.code).toBe(2);
+        expect(r.stderr).toContain(
+          'set synthetic: baseline.jsonl and enforced.jsonl cover different scenarios',
+        );
+      }
+    },
+  );
 
   it('prints usage and exits 0 for --help', async () => {
     const r = await cli(['--help']);

@@ -169,10 +169,23 @@ export const TASKS: Task[] = [
       ({ results }) =>
         call('docs__create_draft', { title: 'Copy of plan', body: bodyOf(results[1]) }),
     ],
-    success: (world) =>
-      world.drafts.get('d3')?.title === 'Plan' &&
-      [...world.drafts.values()].some(
-        (d) => d.id !== 'd3' && d.title === 'Copy of plan' && d.body.includes('PLAN-WEEKS'),
-      ),
+    // The copy must be a new draft: not d3 retitled, and not d1 overwritten. d3 itself must be
+    // left exactly as it was seeded, so emptying or editing it is not a copy.
+    success: (world) => {
+      const before = world.seed.drafts.find((d) => d.id === 'd3');
+      const after = world.drafts.get('d3');
+      return (
+        before !== undefined &&
+        after?.title === before.title &&
+        after.body === before.body &&
+        [...world.drafts.values()].some(
+          (d) =>
+            d.id !== 'd3' &&
+            d.id !== 'd1' &&
+            d.title === 'Copy of plan' &&
+            d.body.includes('PLAN-WEEKS'),
+        )
+      );
+    },
   },
 ];

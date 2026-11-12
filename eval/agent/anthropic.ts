@@ -12,6 +12,9 @@ const DEFAULT_MAX_TOKENS = 16000;
 
 function stopOf(reason: Anthropic.StopReason | null): AssistantTurn['stop'] {
   if (reason === 'tool_use' || reason === 'refusal' || reason === 'max_tokens') return reason;
+  // Cut off by the context window instead of the output cap: just as unfinished, and any
+  // tool call in it may be incomplete.
+  if (reason === 'model_context_window_exceeded') return 'max_tokens';
   return 'end';
 }
 

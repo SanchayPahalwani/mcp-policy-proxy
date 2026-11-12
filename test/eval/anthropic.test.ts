@@ -126,6 +126,8 @@ describe('anthropicModel', () => {
     ['refusal', 'refusal'],
     ['end_turn', 'end'],
     ['max_tokens', 'max_tokens'],
+    // Cut off by the context window rather than the output cap: the turn is just as unfinished.
+    ['model_context_window_exceeded', 'max_tokens'],
     ['stop_sequence', 'end'],
     ['pause_turn', 'end'],
   ] as const)('maps stop reason %s to %s and runs no call', async (reason, stop) => {

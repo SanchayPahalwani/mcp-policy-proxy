@@ -219,9 +219,13 @@ async function replaySets(root: string): Promise<{ summaries: Summary[]; diverge
 
 function reportDivergences(diverged: Divergence[], io: EvalIo): void {
   for (const { set, run } of diverged) {
-    io.stderr.write(
-      `divergence: ${set} ${run.condition} ${run.scenario}: ${run.divergences} result(s) differ from the recording\n`,
-    );
+    // A changed input counts as one divergence, but it is not a result that differs.
+    const results = run.divergences - (run.input_changed ? 1 : 0);
+    const what = [
+      ...(run.input_changed ? ["the model's input changed"] : []),
+      ...(results > 0 ? [`${results} result(s) differ from the recording`] : []),
+    ].join('; ');
+    io.stderr.write(`divergence: ${set} ${run.condition} ${run.scenario}: ${what}\n`);
   }
 }
 
