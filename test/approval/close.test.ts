@@ -65,9 +65,11 @@ describe('closing the cli approver', () => {
     await expect.poll(() => text).toContain('to approve');
     await approver.close?.();
 
-    expect(await active).toEqual({ approved: false });
-    expect(await queued).toEqual({ approved: false });
-    expect(await approver.request(PENDING, signal())).toEqual({ approved: false });
+    // Noted, so the audit log does not show a shutdown as a person saying no.
+    const closed = { approved: false, note: 'approver closed' };
+    expect(await active).toEqual(closed);
+    expect(await queued).toEqual(closed);
+    expect(await approver.request(PENDING, signal())).toEqual(closed);
     expect(text).toContain('cancelled');
     expect(text.split('Approval needed:')).toHaveLength(2);
     expect(input.destroyed).toBe(false);
@@ -77,6 +79,24 @@ describe('closing the cli approver', () => {
   it('refuses after close without ever having prompted', async () => {
     const approver = cliApprover({ input: new PassThrough(), output: new PassThrough() });
     await approver.close?.();
-    expect(await approver.request(PENDING, signal())).toEqual({ approved: false });
+    expect(await approver.request(PENDING, signal())).toEqual({
+      approved: false,
+      note: 'approver closed',
+    });
+  });
+
+  it('still answers a request its own caller gave up on without the note', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = '';
+    output.setEncoding('utf8');
+    output.on('data', (chunk: string) => (text += chunk));
+    const approver = cliApprover({ input, output, graceMs: 0 });
+    const caller = new AbortController();
+    const active = approver.request(PENDING, caller.signal);
+    await expect.poll(() => text).toContain('to approve');
+    caller.abort();
+    expect(await active).toEqual({ approved: false });
+    await approver.close?.();
   });
 });

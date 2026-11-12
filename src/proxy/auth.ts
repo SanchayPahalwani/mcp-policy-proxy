@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { IDENTITY_NAME } from '../policy/schema.js';
 
 export interface IdentitySpec {
   name: string;
@@ -10,9 +11,9 @@ export interface Authenticator {
   authenticate(authorization: string | undefined): string | undefined;
 }
 
-const IDENTITY_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const BEARER = /^Bearer (.+)$/;
+// HTTP auth schemes are case-insensitive (RFC 9110, section 11.1).
+const BEARER = /^bearer (.+)$/i;
 
 export function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');

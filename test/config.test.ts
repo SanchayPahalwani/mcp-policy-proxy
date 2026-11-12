@@ -182,6 +182,24 @@ describe('loadConfig', () => {
     ).not.toThrow();
   });
 
+  it('needs https: for the approval webhook unless it is on a loopback name', () => {
+    const webhook = (url: string) =>
+      configFile((c) => (c['approval'] = { type: 'webhook', url, secret_env: 'HOOK' }));
+    for (const url of ['http://hooks.example.test/approve', 'http://10.0.0.5/approve']) {
+      const issues = loadError(webhook(url)).issues.join('\n');
+      expect(issues).toContain('approval.url');
+      expect(issues).toContain('https:');
+    }
+    for (const url of [
+      'https://hooks.example.test/approve',
+      'http://127.0.0.1:9000/approve',
+      'http://localhost:9000/approve',
+      'http://[::1]:9000/approve',
+    ]) {
+      expect(loadConfig(webhook(url)).approval).toMatchObject({ type: 'webhook', url });
+    }
+  });
+
   it('rejects stdio_identity with an HTTP listener, and a config with no upstreams', () => {
     expect(
       loadError(configFile((c) => (c['stdio_identity'] = 'writer'))).issues.join('\n'),
@@ -243,6 +261,19 @@ describe('startFromConfig', () => {
         'identity "writer": environment variable WRITER_TOKEN is not set',
       ]);
       expect(error.message).not.toContain('TOKEN-MARK');
+    }
+  });
+
+  it('reports each unset or empty token variable once, and never as a shared token', async () => {
+    const config = loadConfig(
+      configFile((c) => c['identities'].push({ name: 'editor', token_env: 'EDITOR_TOKEN' })),
+    );
+    for (const env of [{}, { WRITER_TOKEN: '', EDITOR_TOKEN: '' }]) {
+      const error = await startError(config, env);
+      expect(error.issues).toEqual([
+        'identity "writer": environment variable WRITER_TOKEN is not set',
+        'identity "editor": environment variable EDITOR_TOKEN is not set',
+      ]);
     }
   });
 

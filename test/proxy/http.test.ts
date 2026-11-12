@@ -218,3 +218,53 @@ describe('HTTP proxy', () => {
     }
   });
 });
+
+describe('a request that throws before the MCP handler', () => {
+  it('gets 500, reaches onError, and leaves the proxy serving', async () => {
+    const errors: Error[] = [];
+    let broken = true;
+    const real = staticTokenAuthenticator([
+      { name: 'writer', token_sha256: sha256Hex('tok-writer') },
+    ]);
+    const flaky = await startHttpProxy({
+      upstreams,
+      gate: passthroughGate,
+      onError: (e) => void errors.push(e),
+      authenticator: {
+        authenticate(header) {
+          if (broken) throw new Error('authenticator broke');
+          return real.authenticate(header);
+        },
+      },
+    });
+    cleanups.push(() => flaky.close());
+    const send = () =>
+      fetch(flaky.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer tok-writer',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      });
+
+    const failed = await send();
+    expect(failed.status).toBe(500);
+    expect(await failed.json()).toEqual({ error: 'internal_error' });
+    expect(errors.map((e) => e.message)).toEqual(['authenticator broke']);
+
+    broken = false;
+    const client = new Client(
+      { name: 'test-agent', version: '0.0.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(flaky.url), {
+        requestInit: { headers: { authorization: 'Bearer tok-writer' } },
+      }),
+    );
+    cleanups.push(() => client.close());
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
+  });
+});

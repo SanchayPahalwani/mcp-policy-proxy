@@ -35,8 +35,23 @@ export interface RunningFromConfig {
   closed: Promise<void>;
 }
 
-// A header value with one of these would be refused by Node, which quotes the value in its error.
-const CONTROL = /[\u0000-\u001f\u007f]/;
+/** A character class a variable's value must not contain, and how the issue says so. */
+interface ValueRule {
+  pattern: RegExp;
+  problem: string;
+}
+
+// Header values are limited to visible ASCII, space and tab. Anything else Node or the fetch
+// layer may refuse with an error that quotes the value, or send in a form nobody meant.
+const HEADER_SAFE: ValueRule = {
+  pattern: /[^\t\u0020-\u007e]/,
+  problem: 'holds a character that cannot be sent in a header',
+};
+// The webhook secret is only an HMAC key, but a control character in it is a pasting mistake.
+const NO_CONTROL: ValueRule = {
+  pattern: /[\u0000-\u001f\u007f]/,
+  problem: 'contains a control character',
+};
 
 function startError(issues: string[], cause?: unknown): PolicyError {
   const error = configError('Cannot start', issues);
@@ -53,22 +68,30 @@ interface Secrets {
 /** Looks up each variable the config names; issues name the variable, never a value. */
 function secrets(config: ProxyConfig, env: NodeJS.ProcessEnv): Secrets {
   const issues: string[] = [];
-  const read = (variable: string, what: string, sentAsHeader = false): string => {
+  /** The variable's value, or undefined (with an issue) when it is unset, empty or unusable. */
+  const read = (variable: string, what: string, rule?: ValueRule): string | undefined => {
     const value = env[variable];
-    if (!value) issues.push(`${what}: environment variable ${variable} is not set`);
-    else if (sentAsHeader && CONTROL.test(value)) {
-      issues.push(`${what}: environment variable ${variable} contains a control character`);
+    if (!value) {
+      issues.push(`${what}: environment variable ${variable} is not set`);
+      return undefined;
     }
-    return value ?? '';
+    if (rule?.pattern.test(value)) {
+      issues.push(`${what}: environment variable ${variable} ${rule.problem}`);
+      return undefined;
+    }
+    return value;
   };
   // Over stdio the identity is fixed at launch, so no token is ever presented.
   if (config.listen.transport === 'http') {
     const owners = new Map<string, string>();
     for (const i of config.identities) {
-      const digest =
-        i.token_env !== undefined
-          ? sha256Hex(read(i.token_env, `identity "${i.name}"`))
-          : i.token_sha256?.toLowerCase();
+      // An unset token is already reported; comparing its empty digest would add a false
+      // "share a token" line for every other unset one.
+      let digest = i.token_sha256?.toLowerCase();
+      if (i.token_env !== undefined) {
+        const token = read(i.token_env, `identity "${i.name}"`);
+        digest = token === undefined ? undefined : sha256Hex(token);
+      }
       if (digest === undefined) continue;
       const other = owners.get(digest);
       if (other !== undefined) issues.push(`identities "${other}" and "${i.name}" share a token`);
@@ -81,19 +104,19 @@ function secrets(config: ProxyConfig, env: NodeJS.ProcessEnv): Secrets {
     const values: Record<string, string> = {};
     if (upstream.transport === 'http') {
       for (const [header, variable] of Object.entries(upstream.headers_env ?? {})) {
-        values[header] = read(variable, `upstream "${name}" header ${header}`, true);
+        values[header] = read(variable, `upstream "${name}" header ${header}`, HEADER_SAFE) ?? '';
       }
       headers.set(name, values);
     } else {
       for (const variable of upstream.pass_env ?? []) {
-        values[variable] = read(variable, `upstream "${name}" pass_env`);
+        values[variable] = read(variable, `upstream "${name}" pass_env`) ?? '';
       }
       childEnv.set(name, values);
     }
   }
   const webhookSecret =
     config.approval.type === 'webhook'
-      ? read(config.approval.secret_env, 'webhook approval', true)
+      ? read(config.approval.secret_env, 'webhook approval', NO_CONTROL)
       : undefined;
   if (issues.length > 0) throw startError(issues);
   return { headers, childEnv, ...(webhookSecret !== undefined && { webhookSecret }) };
@@ -151,6 +174,16 @@ function approverFor(config: ProxyConfig, found: Secrets): Approver {
   }
 }
 
+/** Checked again here because a config can be built without `loadConfig`. */
+function checkListenHost(config: ProxyConfig): void {
+  const listen = config.listen;
+  if (listen.transport !== 'http' || LOOPBACK_HOSTS.includes(listen.host)) return;
+  if (listen.allow_non_loopback) return;
+  throw startError([
+    `listen.host "${listen.host}" is not a loopback address; set listen.allow_non_loopback: true to listen on it`,
+  ]);
+}
+
 /** The stdio identity, checked again here because a config can be built without `loadConfig`. */
 function stdioIdentity(config: ProxyConfig): string {
   const identity = config.stdio_identity;
@@ -189,6 +222,7 @@ export async function startFromConfig(
   const env = opts.env ?? process.env;
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
 
+  checkListenHost(config);
   const found = secrets(config, env);
   const policy = readPolicy(config.policy);
   checkPolicy(policy, config, log);

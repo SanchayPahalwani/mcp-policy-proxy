@@ -6,6 +6,7 @@ import {
   localhostOriginValidation,
   toNodeHandler,
 } from '@modelcontextprotocol/node';
+import { LOOPBACK_HOSTS } from '../util.js';
 import type { Authenticator } from './auth.js';
 import { buildServer, type ProxyOptions } from './server.js';
 
@@ -25,9 +26,6 @@ export interface RunningProxy {
 
 export const DEFAULT_SESSION = 'default';
 export const SESSION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
-
-// Exactly the names the SDK's localhost guards accept; any other bind would 403 everything.
-const LOCALHOST_BINDS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function pathOf(target: string | undefined): string {
   // Not `new URL`: it throws on targets such as `//`, and this runs before any auth.
@@ -51,7 +49,8 @@ export async function startHttpProxy(opts: HttpProxyOptions): Promise<RunningPro
   const path = opts.path ?? '/mcp';
   const sessionHeader = (opts.sessionHeader ?? 'x-agent-session').toLowerCase();
   // DNS rebinding only matters when a browser on this machine can reach us by a loopback name.
-  const guards = LOCALHOST_BINDS.has(host)
+  // The guards accept only loopback names, so on any other bind they would refuse everything.
+  const guards = LOOPBACK_HOSTS.includes(host)
     ? [localhostHostValidation(), localhostOriginValidation()]
     : [];
 
@@ -92,7 +91,12 @@ export async function startHttpProxy(opts: HttpProxyOptions): Promise<RunningPro
       return;
     }
 
-    // The token stays out of authInfo so nothing downstream can log or forward it.
+    // The token stops here: it is left out of authInfo and taken off the request itself, so
+    // nothing downstream (the SDK handler, a server, a log) can see, log or forward it.
+    delete req.headers.authorization;
+    for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
+      if (req.rawHeaders[i]?.toLowerCase() === 'authorization') req.rawHeaders.splice(i, 2);
+    }
     (req as IncomingMessage & { auth?: unknown }).auth = {
       token: '',
       clientId: identity,

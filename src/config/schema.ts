@@ -4,18 +4,31 @@ import { parse } from 'yaml';
 import { z } from 'zod';
 import { PolicyError } from '../policy/load.js';
 import { IDENTITY_NAME, SERVER_NAME } from '../policy/schema.js';
-import { messageOf } from '../util.js';
+import { LOOPBACK_HOSTS, messageOf } from '../util.js';
 
 // The config file: its shape and the checks that need nothing outside the file.
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const envName = z.string().regex(ENV_NAME, `must be an environment variable name`);
 
-// Exactly the names the SDK's Host/Origin guards accept; any other host turns them off.
-export const LOOPBACK_HOSTS: readonly string[] = ['127.0.0.1', 'localhost', '::1'];
+export { LOOPBACK_HOSTS };
 
 // Only web URLs: a `file:` or `data:` URL would never be what an operator meant.
 const webUrl = z.url({ protocol: /^https?$/, error: 'must be an http: or https: URL' });
+
+// The webhook's answer decides whether a call runs, and it is trusted on the strength of TLS
+// alone (answers are not signed), so plain http: is only for a receiver on this machine.
+const webhookUrl = webUrl.refine(
+  (url) => {
+    // A URL that does not parse is already reported by webUrl.
+    if (!URL.canParse(url)) return true;
+    const { protocol, hostname } = new URL(url);
+    // An IPv6 hostname keeps its brackets: [::1].
+    const host = hostname.replace(/^\[(.*)\]$/, '$1');
+    return protocol !== 'http:' || LOOPBACK_HOSTS.includes(host);
+  },
+  { error: 'must be an https: URL, or http: on 127.0.0.1, localhost or ::1' },
+);
 
 const listenSchema = z.discriminatedUnion('transport', [
   z.strictObject({
@@ -75,7 +88,7 @@ const approvalSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('deny'), timeout_seconds: timeoutSeconds }),
   z.strictObject({
     type: z.literal('webhook'),
-    url: webUrl,
+    url: webhookUrl,
     secret_env: envName,
     timeout_seconds: timeoutSeconds,
   }),

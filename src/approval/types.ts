@@ -20,7 +20,11 @@ export interface ApprovalResult {
 export interface Approver {
   /** `signal` aborts when the proxy stops waiting; the answer is then ignored. */
   request(pending: PendingApproval, signal: AbortSignal): Promise<ApprovalResult>;
-  /** Stops for good: waiting requests are refused, and so is every later one. */
+  /**
+   * Stops for good: waiting and queued requests are refused with the note `approver closed`,
+   * and so is every later one. The terminal approver leaves its input stream paused, not
+   * destroyed, since the stream (usually stdin) belongs to the process.
+   */
   close?(): void | Promise<void>;
 }
 

@@ -14,6 +14,13 @@ describe('staticTokenAuthenticator', () => {
     expect(auth.authenticate('Bearer t1')).toBe('writer');
   });
 
+  it.each(['bearer t1', 'BEARER t1', 'BeArEr t1'])(
+    'accepts the scheme in any case: %j',
+    (header) => {
+      expect(auth.authenticate(header)).toBe('writer');
+    },
+  );
+
   it('reads a token from the environment', () => {
     expect(auth.authenticate('Bearer t2')).toBe('reader');
   });

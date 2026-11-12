@@ -60,6 +60,9 @@ export function cliApprover(
   // One prompt at a time: each request starts when the one before it has settled.
   let queue: Promise<unknown> = Promise.resolve();
   const closed = new AbortController();
+  // A shutdown is noted as such, so the audit log never shows it as a person refusing.
+  const refusal = (): ApprovalResult =>
+    closed.signal.aborted ? { approved: false, note: 'approver closed' } : { approved: false };
 
   const say = (text: string) => {
     try {
@@ -85,9 +88,9 @@ export function cliApprover(
 
   const ask = async (pending: PendingApproval, signal: AbortSignal): Promise<ApprovalResult> => {
     const gone = () => signal.aborted || closed.signal.aborted;
-    if (gone()) return { approved: false };
+    if (gone()) return refusal();
     await startReading();
-    if (gone()) return { approved: false };
+    if (gone()) return refusal();
     if (inputEnded) return { approved: false, note: 'terminal input closed' };
     return new Promise<ApprovalResult>((resolve) => {
       const finish = (result: ApprovalResult) => {
@@ -97,7 +100,7 @@ export function cliApprover(
         resolve(result);
       };
       const onAbort = () => {
-        finish({ approved: false });
+        finish(refusal());
         say('\ncancelled\n');
       };
       try {
@@ -122,13 +125,13 @@ export function cliApprover(
 
   return {
     request(pending, signal) {
-      if (signal.aborted || closed.signal.aborted) return Promise.resolve({ approved: false });
+      if (signal.aborted || closed.signal.aborted) return Promise.resolve(refusal());
       // A failure in one request must not stop the queue for the next.
       const turn = queue.then(() => ask(pending, signal)).catch(() => ({ approved: false }));
       queue = turn;
       // A request aborted while queued is answered now; its turn is skipped when it comes.
       return new Promise((resolve) => {
-        const onAbort = () => resolve({ approved: false });
+        const onAbort = () => resolve(refusal());
         signal.addEventListener('abort', onAbort, { once: true });
         closed.signal.addEventListener('abort', onAbort, { once: true });
         void turn.then((result) => {

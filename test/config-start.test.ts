@@ -133,7 +133,7 @@ describe('startFromConfig keeps secrets out of what it prints', () => {
     for (const text of [error.message, ...lines]) expect(text).not.toContain('HEADER-MARK');
     if (value.includes('\n')) {
       expect(error.issues).toEqual([
-        'upstream "hdr" header Authorization: environment variable HDR_AUTH contains a control character',
+        'upstream "hdr" header Authorization: environment variable HDR_AUTH holds a character that cannot be sent in a header',
       ]);
     }
   });
@@ -197,6 +197,26 @@ describe('startFromConfig keeps secrets out of what it prints', () => {
     await until(() => envServers().length === 0);
   });
 
+  it.each([
+    ['a non-ASCII letter', 'Bearer caf\u00e9-HEADER-MARK'],
+    ['a line separator', 'Bearer HEADER-MARK\u2028x'],
+    ['a DEL', 'Bearer HEADER-MARK\u007f'],
+  ])('refuses an upstream header with %s, naming only the variable', async (_label, value) => {
+    const cfg = config((c) => {
+      c['upstreams'].hdr = {
+        transport: 'http',
+        url: 'http://127.0.0.1:1/mcp',
+        headers_env: { Authorization: 'HDR_AUTH' },
+      };
+    });
+    const lines: string[] = [];
+    const error = await refused(cfg, { WRITER_TOKEN: 'tok', HDR_AUTH: value }, lines);
+    expect(error.issues).toEqual([
+      'upstream "hdr" header Authorization: environment variable HDR_AUTH holds a character that cannot be sent in a header',
+    ]);
+    for (const text of [error.message, ...lines]) expect(text).not.toContain('HEADER-MARK');
+  });
+
   it('refuses two identities that share a token', async () => {
     const cfg = config((c) => {
       c['identities'].push({ name: 'editor', token_env: 'EDITOR_TOKEN' });
@@ -221,6 +241,22 @@ describe('startFromConfig', () => {
     expect(lines.filter((l) => l.includes('listening on'))).toEqual([
       'warning: listening on 0.0.0.0: bearer tokens travel in clear text and Host/Origin checks are off; terminate TLS in front of the proxy',
     ]);
+  });
+
+  it('refuses a non-loopback host in a config not made by loadConfig', async () => {
+    const cfg = config();
+    if (cfg.listen.transport !== 'http') throw new Error('the config listens on HTTP');
+    const lines: string[] = [];
+    const hand: ProxyConfig = {
+      ...cfg,
+      listen: { ...cfg.listen, host: '0.0.0.0', allow_non_loopback: false },
+    };
+    const error = await refused(hand, { WRITER_TOKEN: 'tok' }, lines);
+    expect(error.issues).toEqual([
+      'listen.host "0.0.0.0" is not a loopback address; set listen.allow_non_loopback: true to listen on it',
+    ]);
+    expect(lines).toEqual([]);
+    await until(() => envServers().length === 0);
   });
 
   it('closes once, however often close() is called', async () => {
