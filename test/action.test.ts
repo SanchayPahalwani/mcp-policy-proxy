@@ -64,9 +64,10 @@ describe('ci.yml', () => {
     for (const step of runs) expect(step.run).toMatch(/^set -euo pipefail\n/);
   });
 
-  it('passes the three example paths to the action', () => {
+  it('passes the example paths, config included, to the action', () => {
     expect(steps.find((s) => s.uses === './')?.with).toEqual({
       policy: 'examples/policy.yaml',
+      config: 'examples/proxy.config.yaml',
       tests: 'examples/policy.test.yaml',
       sessions: 'examples/sessions/ok.jsonl',
     });
@@ -78,6 +79,35 @@ describe('ci.yml', () => {
     expect(run).toContain('3 violation(s)');
     expect(run).not.toContain('|| true');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'accepts only a line that starts with "3 violation(s) in "',
+    () => {
+      const run = steps.find((s) => s.run?.includes('violation.jsonl'))?.run ?? '';
+      const dir = mkdtempSync(join(tmpdir(), 'ci-step-'));
+      try {
+        mkdirSync(join(dir, 'dist'));
+        // Stands in for the CLI: prints what the test says and exits 1, as for violations.
+        writeFileSync(
+          join(dir, 'dist', 'cli.js'),
+          'process.stdout.write(process.env.FAKE_REPORT ?? ""); process.exitCode = 1;\n',
+        );
+        writeFileSync(join(dir, 'step.sh'), run);
+        const status = (report: string) =>
+          spawnSync('bash', ['--noprofile', '--norc', 'step.sh'], {
+            cwd: dir,
+            encoding: 'utf8',
+            env: { PATH: process.env['PATH'] ?? '', FAKE_REPORT: report },
+          }).status;
+        expect(status('a\n3 violation(s) in 5 call(s) across 1 file(s)\n')).toBe(0);
+        expect(status('a\n13 violation(s) in 5 call(s) across 1 file(s)\n')).not.toBe(0);
+        expect(status('a\nx 3 violation(s) in 5 call(s) across 1 file(s)\n')).not.toBe(0);
+        expect(status('3 violation(s)\n')).not.toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('asserts that the violating session is rejected with exit 1', () => {
     const negative = steps.find((s) => s.run?.includes('examples/sessions/violation.jsonl'));
@@ -139,6 +169,20 @@ describe.skipIf(!posix)('the action list inputs, run as bash runs them', () => {
     ]);
     expect(r.code, r.stderr).toBe(0);
     expect(r.argv).toEqual(['check', '--policy', 'p.yaml', '--', 'a.jsonl', 'b.jsonl']);
+  });
+
+  it('runs with the optional inputs absent from the environment, as under set -u', () => {
+    const validate = runStep('Validate the policy', {});
+    expect(validate.code, validate.stderr).toBe(0);
+    expect(validate.argv).toEqual(['validate', '--policy', 'p.yaml']);
+    const check = runStep('Check recorded sessions', { SESSIONS: 'a.jsonl' }, ['a.jsonl']);
+    expect(check.code, check.stderr).toBe(0);
+    expect(check.argv).toEqual(['check', '--policy', 'p.yaml', '--', 'a.jsonl']);
+  });
+
+  it('passes a config to validate when given', () => {
+    const r = runStep('Validate the policy', { CONFIG: 'c.yaml' });
+    expect(r.argv).toEqual(['validate', '--policy', 'p.yaml', '--config', 'c.yaml']);
   });
 
   it('passes an identity when given', () => {

@@ -50,10 +50,13 @@ jobs:
           set -euo pipefail
           npm run build
 
+      # The config names its tokens by variable, and validate reads none of them, so this
+      # needs no secrets.
       - name: Check the example policy
         uses: ./
         with:
           policy: examples/policy.yaml
+          config: examples/proxy.config.yaml
           tests: examples/policy.test.yaml
           sessions: examples/sessions/ok.jsonl
 
@@ -70,13 +73,11 @@ jobs:
             echo "expected exit 1 (violations found), got $status" >&2
             exit 1
           fi
-          case "$output" in
-            *"3 violation(s)"*) ;;
-            *)
-              echo "expected the report to say 3 violation(s)" >&2
-              exit 1
-              ;;
-          esac
+          # Anchored to the start of a line, so a summary of 13 violations cannot pass.
+          if ! grep -q '^3 violation(s) in ' <<< "$output"; then
+            echo "expected a summary line starting with '3 violation(s) in '" >&2
+            exit 1
+          fi
 
       # Replays the committed transcripts against the current proxy and policy, without a
       # model key, and fails if a replay diverges or docs/results.md is out of date.

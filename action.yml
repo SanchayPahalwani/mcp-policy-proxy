@@ -61,7 +61,8 @@ runs:
       run: |
         set -euo pipefail
         args=(--policy "$POLICY")
-        if [ -n "$CONFIG" ]; then
+        # The default keeps set -u from failing when the runner leaves an empty input unset.
+        if [ -n "${CONFIG:-}" ]; then
           args+=(--config "$CONFIG")
         fi
         node "$GITHUB_ACTION_PATH/dist/cli.js" validate "${args[@]}"
@@ -124,7 +125,7 @@ runs:
           files+=("${matches[@]}")
         done
         args=(--policy "$POLICY")
-        if [ -n "$IDENTITY" ]; then
+        if [ -n "${IDENTITY:-}" ]; then
           args+=(--identity "$IDENTITY")
         fi
         node "$GITHUB_ACTION_PATH/dist/cli.js" check "${args[@]}" -- "${files[@]}"
