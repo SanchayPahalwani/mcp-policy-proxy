@@ -69,6 +69,7 @@ async function start(
       audit: sink,
       clock: () => clock.now,
       newId: () => `call-${++ids}`,
+      newRunId: () => 'run-1',
       ...(opts.approver && { approver: opts.approver }),
       ...(opts.approvalTimeoutMs !== undefined && { approvalTimeoutMs: opts.approvalTimeoutMs }),
     }),
@@ -128,6 +129,7 @@ describe('approval gate', () => {
       {
         type: 'decision',
         ts: ISO(6_000),
+        run: 'run-1',
         call_id: 'call-1',
         session: 's1',
         identity: 'release-manager',

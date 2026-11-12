@@ -35,6 +35,8 @@ export interface PolicyGateDeps {
   clock?: Clock;
   audit?: AuditSink;
   newId?: () => string;
+  /** Names this gate's run in every event it writes; a random UUID unless a test sets it. */
+  newRunId?: () => string;
   /** Asked about every `require_approval` call; the default refuses them all. */
   approver?: Approver;
   approvalTimeoutMs?: number;
@@ -68,6 +70,8 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   const clock = deps.clock ?? Date.now;
   const audit = deps.audit;
   const newId = deps.newId ?? randomUUID;
+  // One per gate, and a proxy process builds one gate, so a restart starts a new run.
+  const run = (deps.newRunId ?? randomUUID)();
   const approver = deps.approver ?? denyApprover;
   // Under the MCP SDK client's default request timeout of 60 s, so that with default
   // settings the agent hears the refusal instead of giving up first.
@@ -120,7 +124,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       : cancelled && approval !== undefined
         ? CLIENT_CANCELLED
         : (refusal(decision, approval) ?? (cancelled ? CLIENT_CANCELLED : undefined));
-    const event = decisionEvent(policy, call, callId, decision, refused, approval);
+    const event = decisionEvent(policy, run, call, callId, decision, refused, approval);
     const label = { code: event.code, ...(event.rule !== undefined && { rule: event.rule }) };
     if (refused) {
       record(() => event);
@@ -184,7 +188,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
   ): Promise<CallToolResult> => {
     const outcome = (ok: boolean, isError: boolean, error?: string) =>
       record(() =>
-        outcomeEvent(policy, callId, startedAt, clock(), {
+        outcomeEvent(policy, run, callId, startedAt, clock(), {
           ok,
           isError,
           ...(error !== undefined && { error }),
@@ -209,11 +213,14 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       shown = tools.filter((t) => visible(policy, caller.identity, t.server, t.tool.name));
     } catch (e) {
       console.error('mcp-policy-proxy: policy evaluation failed while listing', e);
+      // The log should still show that this caller asked and was shown nothing.
+      record(() => listEvent(policy, run, caller, clock(), [], 'internal_error'));
       return [];
     }
     record(() =>
       listEvent(
         policy,
+        run,
         caller,
         clock(),
         shown.map((t) => joinName(t.server, t.tool.name)),
@@ -257,7 +264,7 @@ export function policyGate(deps: PolicyGateDeps): Gate {
       // Fail closed: a bug in evaluation must never turn into an allow.
       console.error('mcp-policy-proxy: policy evaluation failed', e);
       // Best effort: the log should still show that this call was refused.
-      record(() => failureEvent(policy, caller, { server, tool }, progress, clock));
+      record(() => failureEvent(policy, run, caller, { server, tool }, progress, clock));
       return deniedResult('internal_error', 'policy evaluation failed');
     }
     ending.code = admission.code;

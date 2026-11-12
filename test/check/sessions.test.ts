@@ -124,6 +124,27 @@ describe('readSessionFile', () => {
     expect(records[1]).toMatchObject({ line: 5, tool: 'get_draft', approved: false });
   });
 
+  it('carries the run a decision names, and leaves it out when there is none', () => {
+    const decision = {
+      type: 'decision',
+      ts: base.ts,
+      session: 's',
+      identity: 'writer',
+      server: 'docs',
+      tool: 'list_drafts',
+      args: {},
+      forwarded: true,
+    };
+    const path = write('runs.jsonl', [
+      { ...decision, run: 'r1' },
+      decision,
+      { ...base, run: 'r2' },
+    ]);
+    const records = readSessionFile(path);
+    expect(records.map((r) => r.run)).toEqual(['r1', undefined, 'r2']);
+    expect('run' in records[1]!).toBe(false);
+  });
+
   it('reads a file with a byte-order mark', () => {
     const path = write('bom.jsonl', ['\uFEFF' + JSON.stringify(base)]);
     expect(readSessionFile(path)).toHaveLength(1);
@@ -277,6 +298,17 @@ describe('readSessionFile', () => {
         { ...rest, name: 'docs__publish', server: 'docs', tool: 'publish' },
       ];
       expect(readSessionFile(write('a.jsonl', agreeing))).toHaveLength(2);
+    });
+
+    it.each([
+      ['a number', 5],
+      ['null', null],
+      ['empty', ''],
+      ['an object', { id: 'r' }],
+    ])('refuses a decision whose run is %s', (_n, run) => {
+      const error = failure(write('r.jsonl', [{ ...decision, run }]));
+      expect(error.message).toMatch(/"run" must be a non-empty string/);
+      expect(error.line).toBe(1);
     });
 
     it('rejects a forwarded decision event whose args are not an object', () => {

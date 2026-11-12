@@ -79,6 +79,7 @@ export function refusal(decision: Decision, approval?: ApprovalStep): Refusal | 
 
 export function decisionEvent(
   policy: Policy,
+  run: string,
   call: Call,
   callId: string,
   decision: Decision,
@@ -95,6 +96,7 @@ export function decisionEvent(
   return {
     type: 'decision',
     ts: iso(call.at),
+    run,
     call_id: callId,
     session: call.session,
     identity: call.identity,
@@ -116,6 +118,7 @@ export function decisionEvent(
 
 export function outcomeEvent(
   policy: Policy,
+  run: string,
   callId: string,
   startedAt: number,
   now: number,
@@ -124,6 +127,7 @@ export function outcomeEvent(
   return {
     type: 'outcome',
     ts: iso(now),
+    run,
     call_id: callId,
     ok: result.ok,
     is_error: result.isError,
@@ -153,6 +157,7 @@ export function errorLabel(e: unknown): string {
 /** For a call refused because something threw; `args` are left out, as they may be the cause. */
 export function internalErrorEvent(
   policy: Policy,
+  run: string,
   caller: Caller,
   target: { server: string; tool: string },
   callId: string,
@@ -164,6 +169,7 @@ export function internalErrorEvent(
   return {
     type: 'decision',
     ts: iso(now),
+    run,
     call_id: callId,
     session: caller.session,
     identity: caller.identity,
@@ -196,6 +202,7 @@ export interface CallProgress {
  */
 export function failureEvent(
   policy: Policy,
+  run: string,
   caller: Caller,
   target: { server: string; tool: string },
   progress: CallProgress,
@@ -210,23 +217,33 @@ export function failureEvent(
   }
   const callId = progress.callId ?? randomUUID();
   if (!progress.decisionWritten) {
-    return internalErrorEvent(policy, caller, target, callId, now, progress.approval);
+    return internalErrorEvent(policy, run, caller, target, callId, now, progress.approval);
   }
   if (!progress.forwardedWritten) return undefined;
-  return outcomeEvent(policy, callId, now, now, {
+  return outcomeEvent(policy, run, callId, now, now, {
     ok: false,
     isError: false,
     error: 'internal_error',
   });
 }
 
-export function listEvent(policy: Policy, caller: Caller, now: number, names: string[]): ListEvent {
+/** `code` is set only for a listing that failed closed, which shows no tools. */
+export function listEvent(
+  policy: Policy,
+  run: string,
+  caller: Caller,
+  now: number,
+  names: string[],
+  code?: string,
+): ListEvent {
   return {
     type: 'list',
     ts: iso(now),
+    run,
     session: caller.session,
     identity: caller.identity,
     tools: [...names].sort(),
+    ...(code !== undefined && { code }),
     policy_sha256: policy.sha256,
   };
 }

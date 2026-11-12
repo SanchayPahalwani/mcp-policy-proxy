@@ -38,6 +38,7 @@ function tempDir(): string {
 const listEvent = (n: number): AuditEvent => ({
   type: 'list',
   ts: new Date(n).toISOString(),
+  run: 'r1',
   session: 's1',
   identity: 'writer',
   tools: [`docs__tool_${n}`],
@@ -47,6 +48,7 @@ const listEvent = (n: number): AuditEvent => ({
 const outcome: AuditEvent = {
   type: 'outcome',
   ts: new Date(0).toISOString(),
+  run: 'r1',
   call_id: 'c1',
   ok: true,
   is_error: false,

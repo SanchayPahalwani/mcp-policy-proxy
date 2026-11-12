@@ -81,6 +81,7 @@ async function start(opts: {
       audit: opts.audit,
       clock: () => clock.now,
       newId: () => `call-${++ids}`,
+      newRunId: () => 'run-1',
     }),
     authenticator: staticTokenAuthenticator([
       { name: 'writer', token_sha256: sha256Hex('tok-writer') },
@@ -143,6 +144,7 @@ describe('audit', () => {
     const decision: DecisionEvent = {
       type: 'decision',
       ts: ISO(1_000),
+      run: 'run-1',
       call_id: 'call-1',
       session: 's1',
       identity: 'writer',
@@ -163,6 +165,7 @@ describe('audit', () => {
       {
         type: 'outcome',
         ts: ISO(1_004),
+        run: 'run-1',
         call_id: 'call-1',
         ok: true,
         is_error: false,
@@ -188,6 +191,7 @@ describe('audit', () => {
       {
         type: 'decision',
         ts: ISO(1_000),
+        run: 'run-1',
         call_id: 'call-1',
         session: 's1',
         identity: 'writer',
@@ -322,6 +326,7 @@ rules:
     expect(sink.events.at(-1)).toEqual({
       type: 'outcome',
       ts: ISO(1_000),
+      run: 'run-1',
       call_id: 'call-1',
       ok: false,
       is_error: false,
@@ -356,6 +361,7 @@ rules:
       {
         type: 'list',
         ts: ISO(1_000),
+        run: 'run-1',
         session: 's1',
         identity: 'writer',
         tools: [
@@ -511,6 +517,78 @@ rules:
   });
 });
 
+describe('run ids', () => {
+  const caller = { identity: 'writer', session: 's1' };
+  const sent: CallToolResult = { content: [{ type: 'text', text: 'sent' }] };
+  const tools = [
+    { server: 'mail', tool: { name: 'send', inputSchema: { type: 'object' as const } } },
+  ];
+
+  async function oneRun(gate: ReturnType<typeof policyGate>): Promise<void> {
+    gate.filterTools(caller, tools);
+    await gate.callTool(
+      caller,
+      { server: 'mail', tool: 'send', args: TEAM_MAIL },
+      async () => sent,
+    );
+    await gate
+      .callTool(caller, { server: 'docs', tool: 'publish', args: {} }, async () => sent)
+      .catch(() => undefined);
+  }
+
+  it('stamps one run id on every decision, outcome and list event of a gate', async () => {
+    const sink = memoryAuditSink();
+    await oneRun(policyGate({ policy: EXAMPLE, audit: sink, newRunId: () => 'run-a' }));
+    expect(sink.events.map((e) => e.type)).toEqual(['list', 'decision', 'outcome', 'decision']);
+    expect(sink.events.map((e) => e.run)).toEqual(['run-a', 'run-a', 'run-a', 'run-a']);
+  });
+
+  it('gives each gate its own random run id', async () => {
+    const first = memoryAuditSink();
+    const second = memoryAuditSink();
+    await oneRun(policyGate({ policy: EXAMPLE, audit: first }));
+    await oneRun(policyGate({ policy: EXAMPLE, audit: second }));
+    const runOf = (events: AuditEvent[]) => [...new Set(events.map((e) => e.run))];
+    expect(runOf(first.events)).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+    expect(runOf(second.events)).toHaveLength(1);
+    expect(runOf(second.events)).not.toEqual(runOf(first.events));
+  });
+
+  it('logs a listing that failed closed as an empty list with internal_error', () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sink = memoryAuditSink();
+    const gate = policyGate({
+      policy: EXAMPLE,
+      audit: sink,
+      clock: () => 1_000,
+      newRunId: () => 'r1',
+    });
+    const broken = {
+      server: 'mail',
+      tool: {
+        inputSchema: { type: 'object' as const },
+        get name(): string {
+          throw new Error('bad tool');
+        },
+      },
+    };
+    expect(gate.filterTools(caller, [...tools, broken])).toEqual([]);
+    expect(logged).toHaveBeenCalled();
+    expect(sink.events).toEqual([
+      {
+        type: 'list',
+        ts: ISO(1_000),
+        run: 'r1',
+        session: 's1',
+        identity: 'writer',
+        tools: [],
+        code: 'internal_error',
+        policy_sha256: EXAMPLE.sha256,
+      },
+    ]);
+  });
+});
+
 describe('audit of calls refused by a throw', () => {
   const caller = { identity: 'writer', session: 's1' };
   const sent: CallToolResult = { content: [{ type: 'text', text: 'sent' }] };
@@ -523,6 +601,7 @@ describe('audit of calls refused by a throw', () => {
       audit: sink,
       clock: () => 1_000,
       newId: () => 'c1',
+      newRunId: () => 'r1',
     });
     const args: Record<string, unknown> = { to: 'team@example.test', body: 'x' };
     args.self = args;
@@ -535,6 +614,7 @@ describe('audit of calls refused by a throw', () => {
       {
         type: 'decision',
         ts: ISO(1_000),
+        run: 'r1',
         call_id: 'c1',
         session: 's1',
         identity: 'writer',
@@ -564,6 +644,7 @@ describe('audit of calls refused by a throw', () => {
       audit: sink,
       clock: () => 1_000,
       newId: () => 'c1',
+      newRunId: () => 'r1',
     });
     const forward = vi.fn(async () => sent);
 
@@ -579,6 +660,7 @@ describe('audit of calls refused by a throw', () => {
       {
         type: 'outcome',
         ts: ISO(1_000),
+        run: 'r1',
         call_id: 'c1',
         ok: false,
         is_error: false,

@@ -25,10 +25,13 @@ export function checkSessions(policy: Policy, files: SessionRecord[][]): CheckRe
   const violations: Violation[] = [];
   let records = 0;
   for (const file of files) {
-    // Limits are per file: a file is one recorded run, and its counters start empty as a live proxy's do.
-    const state = new LimitState();
+    // A live proxy's counters start empty each time it starts, so each run named in the log
+    // gets its own. Lines that name no run (hand-written records, older logs) are one run per file.
+    const states = new Map<string | undefined, LimitState>();
     for (const record of file) {
       records++;
+      let state = states.get(record.run);
+      if (state === undefined) states.set(record.run, (state = new LimitState()));
       const { identity, session, server, tool, args, ts: at } = record;
       const call = { identity, session, server, tool, args, at };
       const decision = decide(policy, state, call);

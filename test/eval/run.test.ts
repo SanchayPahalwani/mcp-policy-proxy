@@ -158,6 +158,7 @@ describe('assertHarnessClean', () => {
   const decision = (code: string, effect: 'allow' | 'deny'): AuditEvent => ({
     type: 'decision',
     ts: '',
+    run: 'r',
     call_id: 'x',
     session: 's',
     identity: 'writer',
@@ -174,6 +175,7 @@ describe('assertHarnessClean', () => {
   const outcome = (ok: boolean, error?: string): AuditEvent => ({
     type: 'outcome',
     ts: '',
+    run: 'r',
     call_id: 'x',
     ok,
     is_error: !ok,

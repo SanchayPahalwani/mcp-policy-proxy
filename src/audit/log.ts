@@ -1,9 +1,16 @@
 import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+/**
+ * `run` is the id of the proxy process that wrote the event, new at every start. Limit
+ * counters live in memory and start empty with each process, so `check` replays each run
+ * with its own counters; without the id, a log appended across restarts would show calls
+ * the live proxy rightly allowed as over the limit.
+ */
 export interface DecisionEvent {
   type: 'decision';
   ts: string;
+  run: string;
   call_id: string;
   session: string;
   identity: string;
@@ -25,6 +32,7 @@ export interface DecisionEvent {
 export interface OutcomeEvent {
   type: 'outcome';
   ts: string;
+  run: string;
   call_id: string;
   ok: boolean;
   is_error: boolean;
@@ -42,9 +50,12 @@ export interface OutcomeEvent {
 export interface ListEvent {
   type: 'list';
   ts: string;
+  run: string;
   session: string;
   identity: string;
   tools: string[];
+  /** `internal_error` when evaluating the listing failed and nothing was shown. */
+  code?: string;
   policy_sha256: string;
 }
 

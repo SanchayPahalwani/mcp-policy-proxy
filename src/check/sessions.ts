@@ -12,6 +12,8 @@ export interface SessionRecord {
   tool: string;
   args: Record<string, unknown>;
   approved: boolean;
+  /** The proxy run that wrote the line, when it names one; `check` keeps limits per run. */
+  run?: string;
 }
 
 export class SessionFormatError extends Error {
@@ -143,6 +145,7 @@ export function readSessionFile(
       return fail('conflicting target fields');
     }
 
+    const run = text_('run');
     const identity = text_('identity') ?? defaults.identity;
     if (identity === undefined) {
       return fail('no identity on the line and no default identity given');
@@ -170,6 +173,7 @@ export function readSessionFile(
       tool: target.tool,
       args,
       approved,
+      ...(run !== undefined && { run }),
     });
   }
   // Array.prototype.sort is stable, so equal times keep file order.
