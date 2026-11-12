@@ -437,8 +437,10 @@ message and the `cause` are what is left for debugging.
 header (HTTP), or the process lifetime (stdio). The value must match
 `[A-Za-z0-9._:-]` and be at most 128 characters, or the request gets `400`.
 With no header, all of an identity's calls share one session named `default`.
-It is an ordinary session: like any other, it is dropped as a whole after an
-hour with no call, and every session's counters start again when the proxy
+It is an ordinary session. Like any other, its counters are dropped as a whole
+once it has gone an hour without a forwarded call and some other session's call
+is forwarded (pruning happens when a call is recorded); a refused call does not
+count as activity. Every session's counters also start again when the proxy
 restarts.
 
 **Alternatives.** Count per connection; or require the header.
@@ -456,8 +458,9 @@ all.
 
 **Why the missing-header default is one shared session.** It errs toward
 refusing: every call that names no session, from any harness using that
-identity, draws on one budget, and that budget starts again only after an hour
-with no call, or a restart.
+identity, draws on one budget. For a lone harness that exhausts it, the budget
+stays exhausted until the proxy restarts, because its own refused calls are
+never recorded and nothing else prunes it.
 
 **Cost.** Session counters are in memory and die with the process.
 
