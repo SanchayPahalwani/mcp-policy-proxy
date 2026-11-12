@@ -1,4 +1,4 @@
-import { ProtocolError, type Client } from '@modelcontextprotocol/client';
+import { ProtocolError, ProtocolErrorCode, type Client } from '@modelcontextprotocol/client';
 import type { Condition } from '../run.js';
 import type { AssistantTurn, Model, ToolCall, ToolDef, ToolResult } from './model.js';
 
@@ -46,9 +46,9 @@ async function execute(client: Client, call: ToolCall): Promise<ToolResult> {
       .join('\n');
     return { tool_call_id: call.id, content, is_error: result.isError === true };
   } catch (e) {
-    // A refusal from the proxy (an unknown or hidden tool) is something the model gets to read;
-    // anything else means the harness is broken, and scoring that run would hide it.
-    if (!(e instanceof ProtocolError)) throw e;
+    // A hidden or unknown tool, or bad arguments, is something the model gets to read. Anything
+    // else means the harness is broken, and scoring that run would hide it.
+    if (!(e instanceof ProtocolError) || e.code !== ProtocolErrorCode.InvalidParams) throw e;
     return { tool_call_id: call.id, content: `Error: ${e.message}`, is_error: true };
   }
 }

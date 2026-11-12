@@ -1,6 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuditEvent } from '../../src/audit/log.js';
+import { Upstreams } from '../../src/proxy/upstreams.js';
 import { scriptedModel } from '../../eval/agent/scripted.js';
-import { runAll, runScenario, EVAL_EPOCH, type RunResult } from '../../eval/run.js';
+import {
+  assertHarnessClean,
+  HarnessError,
+  runAll,
+  runScenario,
+  EVAL_EPOCH,
+  type RunResult,
+} from '../../eval/run.js';
 import { SCENARIOS, type Scenario } from '../../eval/suite/scenarios.js';
 
 function scenario(id: string): Scenario {
@@ -12,6 +21,10 @@ function scenario(id: string): Scenario {
 const results = (run: RunResult) => run.transcript.turns.flatMap((t) => t.results);
 const callsNamed = (run: RunResult, name: string) =>
   run.transcript.turns.flatMap((t) => t.assistant.tool_calls).filter((c) => c.name === name);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('runScenario', () => {
   it('completes a clean task under both conditions with no forbidden calls', async () => {
@@ -95,18 +108,84 @@ describe('runScenario', () => {
     expect(run.ledger.map((e) => e.ts)).toEqual([EVAL_EPOCH + 50_000, EVAL_EPOCH + 51_000]);
   });
 
-  it('is deterministic', async () => {
-    for (const condition of ['baseline', 'enforced'] as const) {
-      const s = scenario('t3+mail_cc-notice');
-      const a = await runScenario(s, condition, scriptedModel);
-      const b = await runScenario(s, condition, scriptedModel);
-      expect(b.transcript).toEqual(a.transcript);
-      expect(b.ledger).toEqual(a.ledger);
-    }
+  it('fails the run when an upstream breaks instead of scoring it', async () => {
+    const real = Upstreams.prototype.callTool;
+    vi.spyOn(Upstreams.prototype, 'callTool').mockImplementation(function (this: Upstreams, ...a) {
+      if (a[1] === 'create_draft') return Promise.reject(new Error('docs server crashed'));
+      return real.apply(this, a);
+    });
+    const s = scenario('t1+clean');
+    const enforced = runScenario(s, 'enforced', scriptedModel);
+    await expect(enforced).rejects.toBeInstanceOf(HarnessError);
+    await expect(enforced).rejects.toThrow(
+      new HarnessError('t1+clean (enforced): the proxy reported outcome error'),
+    );
+    const baseline = runScenario(s, 'baseline', scriptedModel);
+    await expect(baseline).rejects.toThrow('docs server crashed');
+    await expect(baseline).rejects.not.toBeInstanceOf(HarnessError);
+  });
+});
+
+describe('assertHarnessClean', () => {
+  const decision = (code: string, effect: 'allow' | 'deny'): AuditEvent => ({
+    type: 'decision',
+    ts: '',
+    call_id: 'x',
+    session: 's',
+    identity: 'writer',
+    server: 'docs',
+    tool: 'publish',
+    args: {},
+    effect,
+    code,
+    reason: '',
+    visible: false,
+    forwarded: effect === 'allow',
+    policy_sha256: '',
+  });
+  const outcome = (ok: boolean, error?: string): AuditEvent => ({
+    type: 'outcome',
+    ts: '',
+    call_id: 'x',
+    ok,
+    is_error: !ok,
+    ...(error !== undefined && { error }),
+    duration_ms: 0,
+    policy_sha256: '',
+  });
+
+  it('accepts policy refusals and tool errors', () => {
+    const events = [
+      decision('denied_by_rule', 'deny'),
+      decision('no_matching_rule', 'deny'),
+      decision('limit_exceeded', 'deny'),
+      decision('allowed', 'allow'),
+      { ...outcome(true), is_error: true },
+    ];
+    expect(() => assertHarnessClean(events, 't1+clean', 'enforced')).not.toThrow();
+  });
+
+  it.each([
+    [[decision('internal_error', 'deny')], 'internal_error'],
+    [[decision('allowed', 'allow'), decision('audit_failed', 'deny')], 'audit_failed'],
+    [[outcome(false, 'protocol_error -32603')], 'outcome protocol_error -32603'],
+  ])('throws on a proxy failure (%#)', (events, code) => {
+    expect(() => assertHarnessClean(events, 't2+delete-plain', 'enforced')).toThrow(
+      new HarnessError(`t2+delete-plain (enforced): the proxy reported ${code}`),
+    );
+  });
+
+  it('names itself', () => {
+    expect(new HarnessError('x').name).toBe('HarnessError');
   });
 });
 
 describe('runAll', () => {
+  it('gives deeply equal results twice over', { timeout: 120_000 }, async () => {
+    const a = await runAll(['baseline', 'enforced'], scriptedModel);
+    const b = await runAll(['baseline', 'enforced'], scriptedModel);
+    expect(b).toEqual(a);
+  });
   it('scores every scenario under both conditions', { timeout: 120_000 }, async () => {
     const runs = await runAll(['baseline', 'enforced'], scriptedModel);
     expect(runs).toHaveLength(130);
