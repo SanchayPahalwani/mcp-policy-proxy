@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AuditEvent } from '../../src/audit/log.js';
 import { Upstreams } from '../../src/proxy/upstreams.js';
 import { scriptedModel } from '../../eval/agent/scripted.js';
@@ -124,6 +125,33 @@ describe('runScenario', () => {
     await expect(baseline).rejects.toThrow('docs server crashed');
     await expect(baseline).rejects.not.toBeInstanceOf(HarnessError);
   });
+
+  function rejectCreateDraft(code: ProtocolErrorCode) {
+    const real = Upstreams.prototype.callTool;
+    vi.spyOn(Upstreams.prototype, 'callTool').mockImplementation(function (this: Upstreams, ...a) {
+      if (a[1] === 'create_draft') return Promise.reject(new ProtocolError(code, 'bad title'));
+      return real.apply(this, a);
+    });
+  }
+
+  it('scores a tool rejecting the arguments in both conditions', async () => {
+    rejectCreateDraft(ProtocolErrorCode.InvalidParams);
+    for (const condition of ['baseline', 'enforced'] as const) {
+      const run = await runScenario(scenario('t1+clean'), condition, scriptedModel);
+      expect(run).toMatchObject({ task_completed: false, forbidden_calls: 0 });
+      const [create] = callsNamed(run, 'docs__create_draft');
+      const answer = results(run).find((r) => r.tool_call_id === create?.id);
+      expect(answer?.is_error).toBe(true);
+      expect(answer?.content).toMatch(/^Error: .*bad title/);
+    }
+  });
+
+  it('still fails an enforced run on any other protocol error', async () => {
+    rejectCreateDraft(ProtocolErrorCode.InternalError);
+    await expect(runScenario(scenario('t1+clean'), 'enforced', scriptedModel)).rejects.toThrow(
+      new HarnessError('t1+clean (enforced): the proxy reported outcome protocol_error -32603'),
+    );
+  });
 });
 
 describe('assertHarnessClean', () => {
@@ -161,6 +189,7 @@ describe('assertHarnessClean', () => {
       decision('limit_exceeded', 'deny'),
       decision('allowed', 'allow'),
       { ...outcome(true), is_error: true },
+      outcome(false, 'protocol_error -32602'),
     ];
     expect(() => assertHarnessClean(events, 't1+clean', 'enforced')).not.toThrow();
   });

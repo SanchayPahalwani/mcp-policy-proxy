@@ -48,6 +48,8 @@ export class HarnessError extends Error {
 }
 
 const HARNESS_CODES = new Set(['internal_error', 'audit_failed']);
+// A tool refusing the model's arguments is the model's mistake, and baseline scores it too.
+const ARGUMENT_REJECTED = 'protocol_error -32602';
 
 export function assertHarnessClean(
   events: readonly AuditEvent[],
@@ -57,7 +59,9 @@ export function assertHarnessClean(
   for (const event of events) {
     let code: string | undefined;
     if (event.type === 'decision' && HARNESS_CODES.has(event.code)) code = event.code;
-    if (event.type === 'outcome' && !event.ok) code = `outcome ${event.error ?? 'failed'}`;
+    if (event.type === 'outcome' && !event.ok && event.error !== ARGUMENT_REJECTED) {
+      code = `outcome ${event.error ?? 'failed'}`;
+    }
     if (code !== undefined) {
       throw new HarnessError(`${scenarioId} (${condition}): the proxy reported ${code}`);
     }
