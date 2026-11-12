@@ -11,9 +11,7 @@ export interface MessagesClient {
 const DEFAULT_MAX_TOKENS = 16000;
 
 function stopOf(reason: Anthropic.StopReason | null): AssistantTurn['stop'] {
-  if (reason === 'tool_use') return 'tool_use';
-  if (reason === 'refusal') return 'refusal';
-  // max_tokens and the rest end the run: a cut-off turn has no complete call to run.
+  if (reason === 'tool_use' || reason === 'refusal' || reason === 'max_tokens') return reason;
   return 'end';
 }
 
@@ -71,11 +69,14 @@ export function anthropicModel(opts: {
       // The whole content goes back, so thinking blocks return to the API unchanged.
       messages.push({ role: 'assistant', content: response.content });
 
+      const stop = stopOf(response.stop_reason);
       const text: string[] = [];
       const tool_calls: ToolCall[] = [];
       for (const block of response.content) {
         if (block.type === 'text') text.push(block.text);
-        else if (block.type === 'tool_use') {
+        // Only a turn that stopped to use tools has calls to run: one cut off at max_tokens may
+        // hold a call whose input is incomplete, and nothing after a refusal should run.
+        else if (block.type === 'tool_use' && stop === 'tool_use') {
           tool_calls.push({
             id: block.id,
             name: block.name,
@@ -83,7 +84,13 @@ export function anthropicModel(opts: {
           });
         }
       }
-      return { text: text.join('\n'), tool_calls, stop: stopOf(response.stop_reason) };
+      const category = stop === 'refusal' ? response.stop_details?.category : undefined;
+      return {
+        text: text.join('\n'),
+        tool_calls,
+        stop,
+        ...(typeof category === 'string' && { refusal_category: category }),
+      };
     },
   };
 }

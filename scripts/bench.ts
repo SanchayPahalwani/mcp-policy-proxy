@@ -199,6 +199,8 @@ async function main(argv: string[]): Promise<number> {
       replaceBlock(readFileSync(RESULTS, 'utf8'), BENCH_BEGIN, BENCH_END, block),
     );
     process.stderr.write('updated docs/results.md\n');
+  } else {
+    process.stderr.write('not written: --no-write leaves docs/results.md as it was\n');
   }
   return 0;
 }

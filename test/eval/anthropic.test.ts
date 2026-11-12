@@ -8,6 +8,7 @@ type Params = Anthropic.MessageCreateParamsNonStreaming;
 function message(
   content: Anthropic.ContentBlock[],
   stop_reason: Anthropic.StopReason,
+  stop_details: Anthropic.RefusalStopDetails | null = null,
 ): Anthropic.Message {
   return {
     id: 'msg_test',
@@ -16,6 +17,7 @@ function message(
     model: 'claude-test',
     content,
     stop_reason,
+    stop_details,
     stop_sequence: null,
   } as unknown as Anthropic.Message;
 }
@@ -123,13 +125,40 @@ describe('anthropicModel', () => {
   it.each([
     ['refusal', 'refusal'],
     ['end_turn', 'end'],
-    ['max_tokens', 'end'],
+    ['max_tokens', 'max_tokens'],
     ['stop_sequence', 'end'],
-  ] as const)('maps stop reason %s to %s', async (reason, stop) => {
-    const { client } = fakeClient([message([text('x')], reason)]);
+    ['pause_turn', 'end'],
+  ] as const)('maps stop reason %s to %s and runs no call', async (reason, stop) => {
+    // A tool_use block in a turn that did not stop for tools: cut off, refused or otherwise over.
+    const { client } = fakeClient([
+      message([text('x'), toolUse('toolu_9', 'mail__send', { to: 'team@exa' })], reason),
+    ]);
     const model = anthropicModel({ model: 'm', client });
     await model.start({ system: 's', prompt: 'p', tools: [] });
-    expect((await model.next([])).stop).toBe(stop);
+    const turn = await model.next([]);
+    expect(turn).toEqual({ text: 'x', tool_calls: [], stop });
+  });
+
+  it('records the category of a refusal when the API gives one', async () => {
+    const { client } = fakeClient([
+      message([text('I cannot help with that.')], 'refusal', {
+        type: 'refusal',
+        category: 'cyber',
+        explanation: 'not stable text',
+      }),
+      message([], 'refusal', { type: 'refusal', category: null, explanation: null }),
+      message([], 'end_turn'),
+    ]);
+    const model = anthropicModel({ model: 'm', client });
+    await model.start({ system: 's', prompt: 'p', tools: [] });
+    expect(await model.next([])).toEqual({
+      text: 'I cannot help with that.',
+      tool_calls: [],
+      stop: 'refusal',
+      refusal_category: 'cyber',
+    });
+    expect(await model.next([])).not.toHaveProperty('refusal_category');
+    expect(await model.next([])).not.toHaveProperty('refusal_category');
   });
 
   it('starts a fresh conversation on each start', async () => {

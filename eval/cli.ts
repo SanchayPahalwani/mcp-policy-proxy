@@ -5,6 +5,8 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -29,21 +31,21 @@ import { runAll, type Condition, type MakeModel, type RunResult } from './run.js
 import { SCENARIOS, type Scenario } from './suite/scenarios.js';
 
 const CONDITIONS: Condition[] = ['baseline', 'enforced'];
-const DEFAULT_MODEL = 'claude-opus-5-5';
 const SYNTHETIC = 'synthetic';
 // Becomes a directory name, so nothing that could leave eval/transcripts.
 const MODEL_ID = /^[a-z0-9][a-z0-9.-]*$/;
 const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
 const USAGE = `usage: tsx eval/cli.ts run
-       tsx eval/cli.ts record [--model scripted | <model id>] [--only <scenario id>]...
+       tsx eval/cli.ts record --model scripted|<model id> [--only <scenario id>]...
        tsx eval/cli.ts replay [--check]
        tsx eval/cli.ts report
 
   run      runs the scripted model under both conditions and prints the table
   record   runs a model under both conditions and writes its transcript set;
-           --model defaults to ${DEFAULT_MODEL}, which needs ANTHROPIC_API_KEY or
-           ANTHROPIC_AUTH_TOKEN and is billed; --only replaces just those scenarios
+           --model is required: scripted, or a model id such as claude-opus-5-5, which
+           needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN and is billed;
+           --only replaces just those scenarios and keeps the rest of the set
   replay   replays every set under eval/transcripts and prints the table; --check exits 1
            if a replay diverges or docs/results.md does not hold that table
   report   replays every set and rewrites the results block of docs/results.md
@@ -70,16 +72,19 @@ export function transcriptLines(transcripts: Transcript[]): string {
   return transcripts.map((t) => `${JSON.stringify(t)}\n`).join('');
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
 function isTurn(v: unknown): v is TranscriptTurn {
   if (!isObject(v) || typeof v['ts'] !== 'number' || !isObject(v['assistant'])) return false;
-  const { text, tool_calls, stop } = v['assistant'];
+  const { text, tool_calls, stop, refusal_category } = v['assistant'];
   const results = v['results'];
   return (
     typeof text === 'string' &&
-    (stop === 'tool_use' || stop === 'end' || stop === 'refusal') &&
+    ['tool_use', 'end', 'refusal', 'max_tokens'].includes(stop as string) &&
+    (refusal_category === undefined || typeof refusal_category === 'string') &&
     Array.isArray(tool_calls) &&
     tool_calls.every(
       (c) =>
@@ -111,7 +116,9 @@ function parseTranscript(line: string, where: string, condition: Condition): Tra
     typeof value['scenario'] !== 'string' ||
     typeof value['model'] !== 'string' ||
     (value['source'] !== 'synthetic' && value['source'] !== 'live') ||
-    !['end', 'refusal', 'max_turns'].includes(value['ended'] as string) ||
+    typeof value['input_sha256'] !== 'string' ||
+    !SHA256_HEX.test(value['input_sha256']) ||
+    !['end', 'refusal', 'max_tokens', 'max_turns'].includes(value['ended'] as string) ||
     !Array.isArray(value['turns']) ||
     !value['turns'].every(isTurn)
   ) {
@@ -141,6 +148,31 @@ function readSetFile(root: string, set: string, condition: Condition): Transcrip
     .map(({ line, where: at }) => parseTranscript(line, at, condition));
 }
 
+/**
+ * Both files of a set, checked against each other: each scenario at most once, and the same
+ * scenarios under both conditions, since the table compares the two conditions row by row.
+ */
+function readSet(root: string, set: string): Record<Condition, Transcript[]> {
+  const files = {
+    baseline: readSetFile(root, set, 'baseline'),
+    enforced: readSetFile(root, set, 'enforced'),
+  };
+  const ids = (condition: Condition) => {
+    const seen = new Set<string>();
+    for (const { scenario } of files[condition]) {
+      if (seen.has(scenario)) {
+        throw new Error(`set ${set}: ${scenario} appears twice in ${condition}.jsonl`);
+      }
+      seen.add(scenario);
+    }
+    return [...seen].sort().join('\n');
+  };
+  if (ids('baseline') !== ids('enforced')) {
+    throw new Error(`set ${set}: baseline.jsonl and enforced.jsonl cover different scenarios`);
+  }
+  return files;
+}
+
 /** `synthetic` first, then the live sets by name, so the report has a fixed order. */
 function listSets(root: string): string[] {
   const dir = transcriptsDir(root);
@@ -164,15 +196,10 @@ async function replaySets(root: string): Promise<{ summaries: Summary[]; diverge
   const summaries: Summary[] = [];
   const diverged: Divergence[] = [];
   for (const set of listSets(root)) {
+    const files = readSet(root, set);
     const results: RunResult[] = [];
     for (const condition of CONDITIONS) {
-      const seen = new Set<string>();
-      for (const transcript of readSetFile(root, set, condition)) {
-        // A scenario listed twice would be counted twice.
-        if (seen.has(transcript.scenario)) {
-          throw new Error(`set ${set}: ${transcript.scenario} appears twice in ${condition}.jsonl`);
-        }
-        seen.add(transcript.scenario);
+      for (const transcript of files[condition]) {
         const run = await replayRun(transcript);
         results.push(run);
         if (run.divergences > 0) diverged.push({ set, run });
@@ -232,7 +259,7 @@ function readDoc(root: string): string {
 }
 
 function parseRecordArgs(args: string[]): { model: string; only: string[] } {
-  let model = DEFAULT_MODEL;
+  let model: string | undefined;
   const only: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -244,6 +271,8 @@ function parseRecordArgs(args: string[]): { model: string; only: string[] } {
     else only.push(value);
     i++;
   }
+  // Required, so recording a billed live model is never what a bare command does.
+  if (model === undefined) throw new Error(`record: --model is required\n${USAGE}`);
   return { model, only };
 }
 
@@ -255,32 +284,58 @@ function selectScenarios(only: string[]): Scenario[] {
   return SCENARIOS.filter((s) => only.includes(s.id));
 }
 
-function writeSet(root: string, set: string, runs: RunResult[], partial: boolean): void {
+/** The transcripts an `--only` record keeps, read and checked before any run is paid for. */
+function keptTranscripts(root: string, set: string): Record<Condition, Transcript[]> {
+  const present = CONDITIONS.filter((c) => existsSync(setFile(root, set, c)));
+  if (present.length === 0) return { baseline: [], enforced: [] };
+  return readSet(root, set);
+}
+
+/**
+ * Both files go to temporary names first and are renamed only once both are written, so a
+ * failed write leaves the old set in place rather than one new file beside one old one.
+ */
+function writeSet(
+  root: string,
+  set: string,
+  runs: RunResult[],
+  kept: Record<Condition, Transcript[]>,
+): void {
   const order = new Map(SCENARIOS.map((s, i) => [s.id, i]));
   mkdirSync(join(transcriptsDir(root), set), { recursive: true });
-  for (const condition of CONDITIONS) {
-    const path = setFile(root, set, condition);
-    const kept = partial && existsSync(path) ? readSetFile(root, set, condition) : [];
-    const byScenario = new Map(kept.map((t) => [t.scenario, t]));
-    for (const run of runs)
-      if (run.condition === condition) byScenario.set(run.scenario, run.transcript);
-    const transcripts = [...byScenario.values()]
-      .filter((t) => order.has(t.scenario))
-      .sort((a, b) => order.get(a.scenario)! - order.get(b.scenario)!);
-    writeFileSync(path, transcriptLines(transcripts));
+  const staged: Array<{ temp: string; path: string }> = [];
+  try {
+    for (const condition of CONDITIONS) {
+      const byScenario = new Map(kept[condition].map((t) => [t.scenario, t]));
+      for (const run of runs) {
+        if (run.condition === condition) byScenario.set(run.scenario, run.transcript);
+      }
+      const transcripts = [...byScenario.values()]
+        .filter((t) => order.has(t.scenario))
+        .sort((a, b) => order.get(a.scenario)! - order.get(b.scenario)!);
+      const path = setFile(root, set, condition);
+      const temp = `${path}.${process.pid}.tmp`;
+      staged.push({ temp, path });
+      writeFileSync(temp, transcriptLines(transcripts));
+    }
+    for (const { temp, path } of staged) renameSync(temp, path);
+  } finally {
+    for (const { temp } of staged) rmSync(temp, { force: true });
   }
 }
 
 async function record(args: string[], io: EvalIo, root: string): Promise<number> {
   const { model, only } = parseRecordArgs(args);
   const scenarios = selectScenarios(only);
+  if (model !== 'scripted' && !MODEL_ID.test(model)) {
+    throw new Error(`record: ${model} is not a model id`);
+  }
+  const set = model === 'scripted' ? SYNTHETIC : `live-${model}`;
+  const kept = only.length > 0 ? keptTranscripts(root, set) : { baseline: [], enforced: [] };
   let makeModel: MakeModel;
-  let set: string;
   if (model === 'scripted') {
     makeModel = scriptedModel;
-    set = SYNTHETIC;
   } else {
-    if (!MODEL_ID.test(model)) throw new Error(`record: ${model} is not a model id`);
     const env = io.env ?? process.env;
     const apiKey = env['ANTHROPIC_API_KEY'];
     const authToken = env['ANTHROPIC_AUTH_TOKEN'];
@@ -292,12 +347,17 @@ async function record(args: string[], io: EvalIo, root: string): Promise<number>
     }
     const client = new Anthropic(apiKey ? { apiKey } : { authToken: authToken ?? null });
     makeModel = () => anthropicModel({ model, client });
-    set = `live-${model}`;
     io.stderr.write(`recording ${model}: ${scenarios.length * CONDITIONS.length} runs, billed\n`);
   }
   // Nothing is written unless every run finished, so a failure never leaves a half-new set.
-  const runs = await runAll(CONDITIONS, makeModel, scenarios);
-  writeSet(root, set, runs, only.length > 0);
+  let runs: RunResult[];
+  try {
+    runs = await runAll(CONDITIONS, makeModel, scenarios);
+  } catch (e) {
+    io.stderr.write(`record: a run failed, so nothing was written\n`);
+    throw e;
+  }
+  writeSet(root, set, runs, kept);
   io.stdout.write(renderTable([summarize(runs)]));
   io.stderr.write(
     `wrote ${shown(root, join(transcriptsDir(root), set))}/{baseline,enforced}.jsonl\n`,

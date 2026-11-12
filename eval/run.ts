@@ -48,8 +48,10 @@ export class HarnessError extends Error {
 }
 
 const HARNESS_CODES = new Set(['internal_error', 'audit_failed']);
-// A tool refusing the model's arguments is the model's mistake, and baseline scores it too.
-const ARGUMENT_REJECTED = 'protocol_error -32602';
+// With SDK 2.4 an upstream answers -32602 only for a tool it does not have or has disabled;
+// arguments that fail its schema come back as an isError result. Either way the model asked
+// for something that does not exist, which is its mistake and is scored in baseline too.
+const UNKNOWN_TOOL = 'protocol_error -32602';
 
 export function assertHarnessClean(
   events: readonly AuditEvent[],
@@ -59,12 +61,20 @@ export function assertHarnessClean(
   for (const event of events) {
     let code: string | undefined;
     if (event.type === 'decision' && HARNESS_CODES.has(event.code)) code = event.code;
-    if (event.type === 'outcome' && !event.ok && event.error !== ARGUMENT_REJECTED) {
+    if (event.type === 'outcome' && !event.ok && event.error !== UNKNOWN_TOOL) {
       code = `outcome ${event.error ?? 'failed'}`;
     }
     if (code !== undefined) {
       throw new HarnessError(`${scenarioId} (${condition}): the proxy reported ${code}`);
     }
+  }
+}
+
+function assertListingClean(failures: string[], scenarioId: string, condition: Condition): void {
+  if (failures.length > 0) {
+    throw new HarnessError(
+      `${scenarioId} (${condition}): listing tools failed on ${[...new Set(failures)].join(', ')}`,
+    );
   }
 }
 
@@ -97,11 +107,16 @@ export async function runScenario(
   const model = makeModel(scenario, condition);
 
   const audit = memoryAuditSink();
+  // The proxy drops a server whose listing fails and lists the rest, which a run must not
+  // mistake for a policy hiding those tools.
+  const listingFailures: string[] = [];
   const closers: Array<() => Promise<void>> = [];
   let failed = true;
-  let outcome: Pick<Transcript, 'turns' | 'ended'>;
+  let outcome: Pick<Transcript, 'input_sha256' | 'turns' | 'ended'>;
   try {
-    const upstreams = await Upstreams.connect(world.upstreams());
+    const upstreams = await Upstreams.connect(world.upstreams(), {
+      onError: (server) => void listingFailures.push(server),
+    });
     closers.push(() => upstreams.close());
     const proxy = await startHttpProxy({
       upstreams,
@@ -135,12 +150,21 @@ export async function runScenario(
       beforeTurn: (i) => {
         now = opts.turnTimes?.[i] ?? now + TURN_MS;
       },
+      // Before the model starts, so a live run with a broken listing is never paid for.
+      onTools: (tools) => {
+        assertListingClean(listingFailures, scenario.id, condition);
+        if (condition === 'enforced' && tools.length === 0) {
+          throw new HarnessError(`${scenario.id} (${condition}): the proxy listed no tools`);
+        }
+      },
     });
+    assertListingClean(listingFailures, scenario.id, condition);
+    // Inside the try, so a failing close cannot replace this error with its own.
+    assertHarnessClean(audit.events, scenario.id, condition);
     failed = false;
   } finally {
     await closeAll(closers, failed);
   }
-  assertHarnessClean(audit.events, scenario.id, condition);
 
   const ledger = world.ledger.entries;
   return {

@@ -1,6 +1,6 @@
 import { runScenario, type RunResult } from '../run.js';
 import { SCENARIOS } from '../suite/scenarios.js';
-import type { Transcript } from './loop.js';
+import { inputSha256, type Transcript } from './loop.js';
 import type { AssistantTurn, Model, ToolResult } from './model.js';
 
 const END: AssistantTurn = { text: '', tool_calls: [], stop: 'end' };
@@ -16,9 +16,10 @@ function differing(actual: ToolResult[], recorded: ToolResult[]): number {
 }
 
 /**
- * Plays back a transcript's assistant turns while the calls run for real. A divergence is a
- * result that differs from the recorded one: the recorded model never saw it, so whatever it
- * did next is no longer evidence of how it would have reacted.
+ * Plays back a transcript's assistant turns while the calls run for real. A divergence is
+ * anything the recorded model was not shown: a different system prompt, task prompt or tool
+ * list at the start, or a result that differs from the recorded one. Whatever the model did
+ * next is then no longer evidence of how it would have reacted.
  */
 export function replayModel(transcript: Transcript): Model & { divergences(): number } {
   let played = 0;
@@ -26,9 +27,9 @@ export function replayModel(transcript: Transcript): Model & { divergences(): nu
   return {
     id: transcript.model,
     source: transcript.source,
-    async start() {
+    async start(input) {
       played = 0;
-      divergences = 0;
+      divergences = inputSha256(input) === transcript.input_sha256 ? 0 : 1;
     },
     async next(results) {
       divergences += differing(results, played === 0 ? [] : transcript.turns[played - 1]!.results);

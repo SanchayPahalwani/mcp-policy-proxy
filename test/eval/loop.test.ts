@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ProtocolError, ProtocolErrorCode, type Client } from '@modelcontextprotocol/client';
-import { MAX_TURNS, runAgent } from '../../eval/agent/loop.js';
+import { inputSha256, MAX_TURNS, runAgent } from '../../eval/agent/loop.js';
 import type { AssistantTurn, Model, ToolDef, ToolResult } from '../../eval/agent/model.js';
 
 /** Only the two client methods the loop uses; no network. */
@@ -52,6 +52,30 @@ describe('runAgent', () => {
     const run = await runAgent(model, fakeClient(ok), opts);
     expect(run.ended).toBe('refusal');
     expect(run.turns.at(-1)).toEqual({ ts: 0, assistant: refusal, results: [] });
+  });
+
+  it('records a turn cut off at max_tokens as the end of the run', async () => {
+    const cut: AssistantTurn = { text: 'Then I will', tool_calls: [], stop: 'max_tokens' };
+    const { model } = fakeModel((i) => (i === 0 ? toolTurn(i) : cut));
+    const run = await runAgent(model, fakeClient(ok), opts);
+    expect(run.ended).toBe('max_tokens');
+    expect(run.turns.at(-1)).toEqual({ ts: 0, assistant: cut, results: [] });
+  });
+
+  it('hashes the input it gives the model, and lets onTools stop the run first', async () => {
+    const { model, seen } = fakeModel(() => ({ text: '', tool_calls: [], stop: 'end' }));
+    const run = await runAgent(model, fakeClient(ok), opts);
+    expect(run.input_sha256).toBe(
+      inputSha256({ system: 's', prompt: 'p', tools: seen.tools ?? [] }),
+    );
+    const stopped = fakeModel(() => ({ text: '', tool_calls: [], stop: 'end' }));
+    const refuse = () => {
+      throw new Error('no tools listed');
+    };
+    await expect(
+      runAgent(stopped.model, fakeClient(ok), { ...opts, onTools: refuse }),
+    ).rejects.toThrow('no tools listed');
+    expect(stopped.seen.tools).toBeUndefined();
   });
 
   it('turns an invalid-params rejection into a result the model reads', async () => {

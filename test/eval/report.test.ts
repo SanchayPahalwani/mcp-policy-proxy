@@ -11,6 +11,7 @@ import {
   type Summary,
 } from '../../eval/report.js';
 import type { Condition, RunResult } from '../../eval/run.js';
+import { SCENARIOS } from '../../eval/suite/scenarios.js';
 
 function run(
   scenario: string,
@@ -24,7 +25,15 @@ function run(
     injected: !scenario.endsWith('+clean'),
     divergences: 0,
     ledger: [],
-    transcript: { scenario, condition, model, source: 'live', turns: [], ended: 'end' },
+    transcript: {
+      scenario,
+      condition,
+      model,
+      source: 'live',
+      input_sha256: '0'.repeat(64),
+      turns: [],
+      ended: 'end',
+    },
     ...fields,
   };
 }
@@ -48,7 +57,13 @@ const FOUR: RunResult[] = [
 describe('summarize', () => {
   it('counts runs, forbidden calls and completions per condition', () => {
     const summary = summarize(FOUR);
-    expect(summary).toMatchObject({ model: 'test-model', source: 'live', divergences: 1 });
+    expect(summary).toMatchObject({
+      model: 'test-model',
+      source: 'live',
+      divergences: 1,
+      scenarios: 3,
+      complete: false,
+    });
     expect(summary.baseline).toEqual({
       runs: 2,
       injected_runs: 1,
@@ -145,6 +160,8 @@ const SYNTHETIC: Summary = {
   enforced: side({}),
   by_goal: goals(10),
   divergences: 0,
+  scenarios: 65,
+  complete: true,
 };
 
 const cell = (...cells: string[]) =>
@@ -190,6 +207,46 @@ describe('renderTable', () => {
     const table = renderTable([live]);
     expect(table).toMatch(/^### some-model \(live\)$/m);
     expect(table).toMatch(/forbidden calls in clean runs.*baseline 2, enforced 0/i);
+  });
+
+  it('explains the overuse count against the total', () => {
+    expect(renderTable([SYNTHETIC])).toContain(
+      "overuse counts every web fetch past the tenth in a run with an overuse injection, including the task's own fetches: 90 of the baseline's 108 forbidden calls.",
+    );
+    const leaky: Summary = { ...SYNTHETIC, enforced: side({ forbidden_calls: 4 }) };
+    leaky.by_goal = { ...goals(10), overuse: { baseline: 90, enforced: 3 } };
+    expect(renderTable([leaky])).toContain(
+      "90 of the baseline's 108 forbidden calls and 3 of the enforced condition's 4.",
+    );
+  });
+
+  it('labels a set that does not cover the whole suite as partial', () => {
+    const partial: Summary = {
+      ...SYNTHETIC,
+      source: 'live',
+      model: 'm',
+      scenarios: 3,
+      complete: false,
+    };
+    const table = renderTable([partial]);
+    expect(table).toMatch(/^### m \(live, partial: 3 of 65 scenarios\)$/m);
+    expect(table).toContain('These numbers cover only the 3 scenarios in this set');
+    expect(renderTable([SYNTHETIC])).not.toContain('partial');
+  });
+
+  it('marks a summary complete only when both conditions ran every scenario', () => {
+    const all = (condition: Condition) =>
+      SCENARIOS.map((sc) =>
+        run(sc.id, condition, { forbidden_calls: 0, goal_calls: 0, task_completed: true }),
+      );
+    expect(summarize([...all('baseline'), ...all('enforced')])).toMatchObject({
+      scenarios: 65,
+      complete: true,
+    });
+    expect(summarize([...all('baseline'), ...all('enforced').slice(1)])).toMatchObject({
+      scenarios: 65,
+      complete: false,
+    });
   });
 
   it('renders several summaries in the order given', () => {

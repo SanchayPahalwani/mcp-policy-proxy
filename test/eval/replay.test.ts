@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { Transcript } from '../../eval/agent/loop.js';
-import type { AssistantTurn, Model } from '../../eval/agent/model.js';
+import { inputSha256, type Transcript } from '../../eval/agent/loop.js';
+import type { AssistantTurn, Model, ModelInput } from '../../eval/agent/model.js';
 import { replayModel, replayRun } from '../../eval/agent/replay.js';
 import { scriptedModel } from '../../eval/agent/scripted.js';
 import { EVAL_EPOCH, runScenario } from '../../eval/run.js';
@@ -16,6 +16,7 @@ function scenario(id: string): Scenario {
 }
 
 const timesOf = (t: Transcript) => t.turns.map((turn) => turn.ts);
+const EMPTY_INPUT: ModelInput = { system: '', prompt: '', tools: [] };
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -56,6 +57,7 @@ describe('replayModel', () => {
       condition: 'baseline',
       model: 'm',
       source: 'live',
+      input_sha256: inputSha256(EMPTY_INPUT),
       ended: 'end',
       turns: [
         {
@@ -78,7 +80,7 @@ describe('replayModel', () => {
     };
     const model = replayModel(transcript);
     expect(model).toMatchObject({ id: 'm', source: 'live' });
-    await model.start({ system: '', prompt: '', tools: [] });
+    await model.start(EMPTY_INPUT);
     expect(await model.next([])).toEqual(transcript.turns[0]?.assistant);
     const done = await model.next([
       { tool_call_id: 'a', content: 'one', is_error: true },
@@ -94,6 +96,7 @@ describe('replayModel', () => {
       condition: 'baseline',
       model: 'm',
       source: 'synthetic',
+      input_sha256: inputSha256(EMPTY_INPUT),
       ended: 'max_turns',
       turns: [
         {
@@ -114,6 +117,45 @@ describe('replayModel', () => {
     expect(extra.stop).toBe('end');
     expect(extra.tool_calls).toEqual([]);
     expect(model.divergences()).toBe(1);
+  });
+
+  it('counts a divergence when the model is given a different input than was recorded', async () => {
+    const recorded = await runScenario(scenario('t1+clean'), 'baseline', scriptedModel);
+    const { input_sha256 } = recorded.transcript;
+    expect(input_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const model = replayModel(recorded.transcript);
+    await model.start(EMPTY_INPUT);
+    expect(model.divergences()).toBeGreaterThan(0);
+
+    // The hash ignores key order and undefined members, so only a real change counts.
+    const tool = {
+      name: 'docs__get_draft',
+      description: 'Reads a draft',
+      input_schema: { a: 1, b: 2 },
+    };
+    const same = inputSha256({ system: 's', prompt: 'p', tools: [tool] });
+    expect(
+      inputSha256({
+        prompt: 'p',
+        tools: [
+          { input_schema: { b: 2, a: 1 }, description: 'Reads a draft', name: 'docs__get_draft' },
+        ],
+        system: 's',
+      }),
+    ).toBe(same);
+    expect(
+      inputSha256({ system: 's', prompt: 'p', tools: [{ ...tool, description: 'Reads it' }] }),
+    ).not.toBe(same);
+    expect(
+      inputSha256({ system: 's', prompt: 'p', tools: [{ ...tool, description: undefined }] }),
+    ).toBe(
+      inputSha256({
+        system: 's',
+        prompt: 'p',
+        tools: [{ name: tool.name, input_schema: tool.input_schema }],
+      }),
+    );
   });
 
   it('returns copies, so a run cannot change the transcript it plays', async () => {
@@ -211,6 +253,7 @@ describe('replayRun', () => {
       condition: 'baseline',
       model: 'm',
       source: 'synthetic',
+      input_sha256: inputSha256(EMPTY_INPUT),
       ended: 'end',
       turns: [],
     };
