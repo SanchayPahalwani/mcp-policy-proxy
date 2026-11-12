@@ -26,7 +26,8 @@
     "eval:record": "tsx eval/cli.ts record",
     "eval:replay": "tsx eval/cli.ts replay",
     "eval:report": "tsx eval/cli.ts report",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "demo": "tsx scripts/demo.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
