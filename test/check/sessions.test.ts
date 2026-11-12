@@ -231,6 +231,26 @@ describe('readSessionFile', () => {
       expect(readSessionFile(write('t.jsonl', [{ ...base, ts }]))).toHaveLength(1);
     });
 
+    it('refuses a numeric ts outside the Date range', () => {
+      for (const ts of ['8.64e15', '-8.64e15']) {
+        expect(
+          readSessionFile(
+            write('r.jsonl', [`{"ts":${ts},"identity":"w","server":"d","tool":"t"}`]),
+          ),
+        ).toHaveLength(1);
+      }
+      expect(
+        failure(
+          write('r.jsonl', ['{"ts":8.640000000000001e15,"identity":"w","server":"d","tool":"t"}']),
+        ).message,
+      ).toMatch(/"ts"/);
+    });
+
+    it('says a plain name is not namespaced, even next to server and tool', () => {
+      const error = failure(write('n.jsonl', [{ ...base, name: 'publish' }]));
+      expect(error.message).toContain('"name" must be a namespaced server__tool name');
+    });
+
     it('refuses a non-finite numeric ts', () => {
       expect(
         failure(write('t.jsonl', ['{"ts":1e999,"identity":"w","server":"d","tool":"t"}'])).line,

@@ -5,6 +5,7 @@ import { check } from './cli/check.js';
 import { explain } from './cli/explain.js';
 import { serve, serveArgs } from './cli/serve.js';
 import { test } from './cli/test.js';
+import { HelpRequested } from './cli/shared.js';
 import { validate } from './cli/validate.js';
 import { messageOf } from './util.js';
 
@@ -28,7 +29,7 @@ export async function main(
   argv: string[],
   io: CliIo = { stdout: process.stdout, stderr: process.stderr },
 ): Promise<number> {
-  if (argv.includes('--help') || argv.includes('-h')) {
+  if (argv[0] === '--help' || argv[0] === '-h') {
     io.stdout.write(USAGE);
     return 0;
   }
@@ -37,6 +38,10 @@ export async function main(
     try {
       return OFFLINE[command as keyof typeof OFFLINE](rest, io);
     } catch (e) {
+      if (e instanceof HelpRequested) {
+        io.stdout.write(USAGE);
+        return 0;
+      }
       // Unreadable or malformed input, as opposed to a finding about it.
       io.stderr.write(`mcp-policy-proxy: ${messageOf(e)}\n`);
       return 2;

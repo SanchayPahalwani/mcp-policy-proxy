@@ -11,10 +11,21 @@ const FORMATS: readonly string[] = ['text', 'json', 'github'];
 
 export type OptionSpec = Record<string, { type: 'string' }>;
 
+/** Thrown by `parse` when `-h`/`--help` was parsed as an option (not after `--`, not as a value). */
+export class HelpRequested extends Error {}
+
 export function parse<T extends OptionSpec>(args: string[], options: T) {
   try {
-    return parseArgs({ args, options, allowPositionals: true, strict: true });
+    const parsed = parseArgs({
+      args,
+      options: { ...options, help: { type: 'boolean', short: 'h' } },
+      allowPositionals: true,
+      strict: true,
+    });
+    if ((parsed.values as { help?: boolean }).help === true) throw new HelpRequested();
+    return parsed as { values: Partial<Record<keyof T, string>>; positionals: string[] };
   } catch (e) {
+    if (e instanceof HelpRequested) throw e;
     throw new InputError(messageOf(e));
   }
 }

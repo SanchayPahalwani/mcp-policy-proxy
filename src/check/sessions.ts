@@ -37,8 +37,36 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\
 
 // The engine throws on a non-finite time, so a bad one is refused here with its line number.
 function parseTime(value: unknown): number | undefined {
-  const ms = typeof value === 'string' ? (ISO_TIME.test(value) ? Date.parse(value) : NaN) : value;
-  return typeof ms === 'number' && Number.isFinite(ms) ? ms : undefined;
+  let ms = value;
+  if (typeof value === 'string') ms = isRealTime(value) ? Date.parse(value) : NaN;
+  return typeof ms === 'number' && Number.isFinite(ms) && Math.abs(ms) <= MAX_DATE_MS
+    ? ms
+    : undefined;
+}
+
+const MAX_DATE_MS = 8.64e15;
+
+// Date.parse rolls 2026-02-30 over to March 2, which would put the call on a day nobody recorded.
+function isRealTime(text: string): boolean {
+  if (!ISO_TIME.test(text)) return false;
+  const [year, month, day, hour, minute, second] = text.split(/[-T:.Z+]/, 6).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const monthLength = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= monthLength &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59
+  );
 }
 
 export function readSessionFile(
@@ -94,10 +122,19 @@ export function readSessionFile(
     if (server !== undefined && tool === undefined) fail('"tool" is required');
     const forms: Array<{ server: string; tool: string }> = [];
     if (server !== undefined && tool !== undefined) forms.push({ server, tool });
-    for (const namespaced of [name, server === undefined ? tool : undefined]) {
+    for (const [field, namespaced] of [
+      ['name', name],
+      ['tool', server === undefined ? tool : undefined],
+    ] as const) {
       if (namespaced === undefined) continue;
       const parts = splitName(namespaced);
-      if (!parts) return fail('needs "server" and "tool", or a name like server__tool');
+      if (!parts) {
+        return fail(
+          field === 'name'
+            ? '"name" must be a namespaced server__tool name'
+            : 'needs "server" and "tool", or a name like server__tool',
+        );
+      }
       forms.push(parts);
     }
     const target = forms[0];

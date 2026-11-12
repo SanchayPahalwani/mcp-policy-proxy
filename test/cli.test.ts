@@ -279,8 +279,27 @@ describe('unexpected arguments and help', () => {
     expect(e.code).toBe(2);
   });
 
-  it('prints usage to stdout and exits 0 for --help or -h anywhere', async () => {
-    for (const argv of [['--help'], ['check', '-h'], ['validate', '--policy', POLICY, '--help']]) {
+  it('does not read -h or --help as help after "--" or as an option value', async () => {
+    const bad = temp('bad.jsonl', 'nope\n');
+    const afterDashes = await run(['check', '--policy', POLICY, '--', bad, '-h']);
+    expect(afterDashes.code).toBe(2);
+    expect(afterDashes.err).toContain(`${bad}:1:`);
+    const asValue = await run(['check', '--policy', POLICY, '--identity', '-h', OK]);
+    expect(asValue.out).not.toContain('usage:');
+    expect(asValue.code).not.toBe(0);
+    const test = await run(['test', '--policy', POLICY, '--', '--help']);
+    expect(test.code).toBe(2);
+    expect(test.out).toBe('');
+  });
+
+  it('prints usage to stdout and exits 0 for --help or -h as an option', async () => {
+    for (const argv of [
+      ['--help'],
+      ['-h'],
+      ['check', '--help'],
+      ['check', '-h'],
+      ['validate', '--policy', POLICY, '--help'],
+    ]) {
       const r = await run(argv);
       expect(r.code).toBe(0);
       expect(r.out).toContain('usage: mcp-policy-proxy serve');
