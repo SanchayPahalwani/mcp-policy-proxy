@@ -21,7 +21,12 @@
     "test": "vitest run",
     "format": "prettier --write \"**/*.{ts,json,md,yaml,yml}\"",
     "format:check": "prettier --check \"**/*.{ts,json,md,yaml,yml}\"",
-    "cli": "tsx src/cli.ts"
+    "cli": "tsx src/cli.ts",
+    "eval": "tsx eval/cli.ts run",
+    "eval:record": "tsx eval/cli.ts record",
+    "eval:replay": "tsx eval/cli.ts replay",
+    "eval:report": "tsx eval/cli.ts report",
+    "bench": "tsx scripts/bench.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.4.0",

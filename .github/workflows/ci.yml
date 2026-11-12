@@ -78,4 +78,10 @@ jobs:
               ;;
           esac
 
-# eval replay step is added here by a later task
+      # Replays the committed transcripts against the current proxy and policy, without a
+      # model key, and fails if a replay diverges or docs/results.md is out of date.
+      - name: Replay the eval transcripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run eval:replay -- --check
