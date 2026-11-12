@@ -127,7 +127,7 @@ function render(direct: Row, proxied: Row): string {
   const widths = rows[0]!.map((_, i) => Math.max(3, ...rows.map((r) => r[i]!.length)));
   const line = (cells: string[]) => `| ${cells.map((c, i) => c.padEnd(widths[i]!)).join(' | ')} |`;
   return [
-    `Local loopback, synthetic. Measured ${new Date().toISOString().slice(0, 10)} with \`npm run bench\`.`,
+    `Local loopback measurement, synthetic workload. Measured ${new Date().toISOString().slice(0, 10)} with \`npm run bench\`.`,
     '',
     `- Node ${process.version}, ${process.platform}/${process.arch}, ${cpus()[0]?.model.trim() ?? 'unknown CPU'}`,
     `- One \`tools/call\` of an \`echo\` tool on a Streamable HTTP server at 127.0.0.1: ${WARMUP} warm-up calls, then ${CALLS.toLocaleString('en-US')} sequential calls per path`,

@@ -180,7 +180,7 @@ block.
 
 <!-- prettier-ignore-start -->
 <!-- bench:begin -->
-Local loopback, synthetic. Measured 2026-11-12 with `npm run bench`.
+Local loopback measurement, synthetic workload. Measured 2026-11-12 with `npm run bench`.
 
 - Node v22.14.0, darwin/arm64, Apple M3 Pro
 - One `tools/call` of an `echo` tool on a Streamable HTTP server at 127.0.0.1: 100 warm-up calls, then 1,000 sequential calls per path
