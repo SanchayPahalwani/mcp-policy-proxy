@@ -139,6 +139,20 @@ cases:
     expect(r.out).toContain('1 of 1 policy test(s) failed');
   });
 
+  it('notes a test file with no cases, without changing the exit code', async () => {
+    const empty = temp('empty.test.yaml', `policy: ${POLICY}\ncases: []\n`);
+    const r = await run(['test', empty, `${EXAMPLES}policy.test.yaml`]);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe(`note: ${empty}: no cases\n`);
+  });
+
+  it('heads an invalid test file as a policy test file', async () => {
+    const bad = temp('bad.test.yaml', `policy: ${POLICY}\ncases: [{ name: x }]\n`);
+    const r = await run(['test', bad]);
+    expect(r.code).toBe(2);
+    expect(r.err.split('\n')[0]).toBe(`mcp-policy-proxy: Invalid policy test file ${bad}:`);
+  });
+
   it('takes the policy from --policy and exits 2 for an unreadable test file', async () => {
     const path = temp(
       't.test.yaml',
@@ -176,9 +190,13 @@ describe('validate', () => {
     expect(r.out.trimEnd().split('\n').at(-1)).toMatch(/^0 error\(s\), 2 warning\(s\)$/);
   });
 
-  it('exits 0 with no config and no findings', async () => {
+  it('exits 0 with no config and no findings, noting what was not checked', async () => {
     const r = await run(['validate', '--policy', POLICY]);
-    expect(r).toEqual({ code: 0, out: '0 error(s), 0 warning(s)\n', err: '' });
+    expect(r).toEqual({
+      code: 0,
+      out: '0 error(s), 0 warning(s)\n',
+      err: 'note: no --config given, so identity and server names were not checked\n',
+    });
   });
 
   it('exits 1 for a policy that constrains a redacted key', async () => {
@@ -200,19 +218,26 @@ rules:
     expect(r.out).toContain('error: rule "by-token": constraint on "token" uses a redacted key');
   });
 
-  it('exits 1 when the policy does not parse and when the config does not load', async () => {
+  it('exits 1 when the policy does not parse and when the config is invalid', async () => {
     const bad = temp('bad.yaml', 'version: 2\nrules: []\n');
     const r = await run(['validate', '--policy', bad]);
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/^mcp-policy-proxy: Invalid policy:/);
-    const noConfig = await run(['validate', '--policy', POLICY, '--config', '/no/config.yaml']);
-    expect(noConfig.code).toBe(1);
-    expect(noConfig.err).toMatch(/^mcp-policy-proxy: Cannot read config/);
+    for (const text of ['listen: [', 'listen: { transport: carrier-pigeon }\n']) {
+      const config = temp('proxy.config.yaml', text);
+      const invalid = await run(['validate', '--policy', POLICY, '--config', config]);
+      expect(invalid.code).toBe(1);
+      expect(invalid.err).toMatch(/^mcp-policy-proxy: (Cannot read|Invalid) config/);
+    }
   });
 
-  it('exits 2 for a policy file that cannot be read', async () => {
+  it('exits 2 for a policy or config file that cannot be read', async () => {
     expect((await run(['validate', '--policy', '/no/such.yaml'])).code).toBe(2);
     expect((await run(['validate'])).code).toBe(2);
+    const noConfig = await run(['validate', '--policy', POLICY, '--config', '/no/config.yaml']);
+    expect(noConfig.code).toBe(2);
+    expect(noConfig.err).toContain('/no/config.yaml');
+    expect(noConfig.out).toBe('');
   });
 });
 

@@ -214,6 +214,10 @@ describe('schema rules', () => {
     ['arg with trailing dot', rule({ when: [{ arg: 'a.', min: 1 }] }), 'empty path segments'],
     ['arg with leading dot', rule({ when: [{ arg: '.a', min: 1 }] }), 'empty path segments'],
     ['arg with double dot', rule({ when: [{ arg: 'a..b', min: 1 }] }), 'empty path segments'],
+    ['arg with a space', rule({ when: [{ arg: 'to address', min: 1 }] }), 'whitespace'],
+    ['arg with a padded segment', rule({ when: [{ arg: 'to. address', min: 1 }] }), 'whitespace'],
+    ['arg with a tab', rule({ when: [{ arg: 'to\taddress', min: 1 }] }), 'whitespace'],
+    ['arg that is only a space', rule({ when: [{ arg: ' ', min: 1 }] }), 'whitespace'],
     [
       'matches that does not compile',
       rule({ when: [{ arg: 'a', matches: '(' }] }),

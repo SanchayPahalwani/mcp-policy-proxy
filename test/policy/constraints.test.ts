@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileConstraint, MAX_MATCH_LENGTH } from '../../src/policy/constraints.js';
-import type { ConstraintSpec } from '../../src/policy/schema.js';
+import { CONSTRAINT_OPERATORS, type ConstraintSpec } from '../../src/policy/schema.js';
 
 function run(spec: ConstraintSpec, args: Record<string, unknown>) {
   return compileConstraint(spec).test(args);
@@ -99,6 +99,25 @@ describe('arrays', () => {
     expect(run(spec, { a: [] })).toEqual(fail('a is empty'));
     expect(run({ ...spec, optional: true }, { a: [] })).toEqual(fail('a is empty'));
   });
+
+  // Typed by the schema's list, so a new operator does not compile until it has a case here.
+  const ONE_OF_EACH: Record<(typeof CONSTRAINT_OPERATORS)[number], ConstraintSpec> = {
+    equals: { arg: 'a', equals: [] },
+    in: { arg: 'a', in: [[]] },
+    matches: { arg: 'a', matches: '.*' },
+    max_length: { arg: 'a', max_length: 5 },
+    min: { arg: 'a', min: 0 },
+    max: { arg: 'a', max: 5 },
+    absent: { arg: 'a', absent: true },
+  };
+  it.each(CONSTRAINT_OPERATORS.map((op) => [op, ONE_OF_EACH[op]] as const))(
+    'fails an empty array under %s, with or without optional',
+    (op, each) => {
+      const why = op === 'absent' ? 'a must be absent' : 'a is empty';
+      expect(run(each, { a: [] })).toEqual(fail(why));
+      if (op !== 'absent') expect(run({ ...each, optional: true }, { a: [] })).toEqual(fail(why));
+    },
+  );
   it('reports a wrong-typed element', () => {
     expect(run({ arg: 'a', max_length: 2 }, { a: ['ab', 3] })).toEqual(
       fail('a has the wrong type'),

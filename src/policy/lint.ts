@@ -6,10 +6,10 @@ export interface LintIssue {
   message: string;
 }
 
-// The audit log blanks redacted keys, so a decision on one could not be replayed offline.
+// The audit log blanks redacted keys, and everything under one, so a decision on any of it
+// could not be replayed offline.
 function constrainsRedactedKey(arg: string, redactKeys: string[]): boolean {
-  const last = arg.split('.').pop() ?? arg;
-  return redactKeys.includes(last.toLowerCase());
+  return arg.split('.').some((segment) => redactKeys.includes(segment.toLowerCase()));
 }
 
 export function lintPolicy(

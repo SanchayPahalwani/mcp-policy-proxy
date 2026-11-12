@@ -14,8 +14,9 @@ import {
 export class PolicyError extends Error {
   readonly issues: string[];
 
-  constructor(issues: string[]) {
-    super(`Invalid policy:\n${issues.join('\n')}`);
+  /** `headline` says what was being read: a policy unless the caller says otherwise. */
+  constructor(issues: string[], headline = 'Invalid policy') {
+    super(`${headline}:\n${issues.join('\n')}`);
     this.name = 'PolicyError';
     this.issues = issues;
   }

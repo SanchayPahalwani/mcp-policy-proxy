@@ -22,6 +22,25 @@ describe('lintPolicy', () => {
     expect(issues[0]?.message).not.toContain('r1');
   });
 
+  it.each(['secret.kind', 'auth.Token.value', 'a.password'])(
+    'errors on a constraint under a redacted key anywhere in its path: %s',
+    (arg) => {
+      const p = parsePolicy(rule(`    when:\n      - arg: ${arg}\n        equals: abc\n`));
+      expect(lintPolicy(p)).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          rule: 'r1',
+          message: expect.stringContaining(arg),
+        }),
+      ]);
+    },
+  );
+
+  it('leaves a path that only contains a redacted word inside a segment alone', () => {
+    const p = parsePolicy(rule(`    when:\n      - arg: secrets_list.kind\n        equals: abc\n`));
+    expect(lintPolicy(p)).toEqual([]);
+  });
+
   it('errors on an unknown identity only when a known set is given; an allow rule on an unknown server warns', () => {
     const p = parsePolicy(rule(''));
     expect(lintPolicy(p)).toEqual([]);

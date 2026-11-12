@@ -46,7 +46,17 @@ export const SERVER_NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const IDENTITY_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 export const RULE_ID = /^[a-z0-9][a-z0-9_-]*$/;
 
-const OPERATORS = ['equals', 'in', 'matches', 'max_length', 'min', 'max', 'absent'] as const;
+/** Every constraint operator; a constraint names exactly one. */
+export const CONSTRAINT_OPERATORS = [
+  'equals',
+  'in',
+  'matches',
+  'max_length',
+  'min',
+  'max',
+  'absent',
+] as const;
+const OPERATORS = CONSTRAINT_OPERATORS;
 
 const constraintSchema = z
   .strictObject({
@@ -55,7 +65,10 @@ const constraintSchema = z
       .min(1)
       .refine((a) => a.split('.').every((seg) => seg !== ''), {
         error: 'arg must not have empty path segments',
-      }),
+      })
+      // A key such as "to " is almost always a typo, and against it absent and optional
+      // constraints pass for every call, since the real argument is never named.
+      .refine((a) => !/\s/.test(a), { error: 'arg path segments must not contain whitespace' }),
     optional: z.boolean().optional(),
     equals: z.unknown().optional(),
     in: z.array(z.unknown()).optional(),

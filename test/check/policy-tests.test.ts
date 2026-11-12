@@ -107,6 +107,29 @@ describe('runPolicyTestFile', () => {
     expect(runPolicyTestFile(path)).toEqual([]);
   });
 
+  it('heads errors about the test file as such', () => {
+    const path = tempTestFile(`cases: []\nbogus: 1\n`);
+    expect(() => runPolicyTestFile(path)).toThrow(
+      new RegExp(`^Invalid policy test file ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\n`),
+    );
+  });
+
+  it('names both the test file and the policy file when the referenced policy is invalid', () => {
+    const path = tempTestFile(`policy: ./bad.yaml\ncases: []\n`);
+    const policy = join(dirname(path), 'bad.yaml');
+    writeFileSync(policy, 'version: 2\nrules: []\n');
+    let error: unknown;
+    try {
+      runPolicyTestFile(path);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(PolicyError);
+    const message = (error as PolicyError).message;
+    expect(message.split('\n')[0]).toBe(`Invalid policy ${policy}, referenced by ${path}:`);
+    expect(message).toContain('version must be 1');
+  });
+
   it('names the test file and policy path when the policy is missing', () => {
     const path = tempTestFile(`policy: ./nope.yaml\ncases: []\n`);
     expect(() => runPolicyTestFile(path)).toThrow(PolicyError);

@@ -121,15 +121,27 @@ function runCase(policy: Policy, c: Case): string | undefined {
   return undefined;
 }
 
+/** A problem with the test file itself, headed so it is not mistaken for one in a policy. */
+const testFileError = (path: string, issues: string[]) =>
+  new PolicyError(issues, `Invalid policy test file ${path}`);
+
 function loadReferencedPolicy(testPath: string, reference: string | undefined): Policy {
   if (reference === undefined) {
-    throw new PolicyError([`${testPath}: no "policy:" in the file and no policy was given`]);
+    throw testFileError(testPath, ['no "policy:" in the file and no policy was given']);
   }
   const policyPath = resolve(dirname(testPath), reference);
   if (!existsSync(policyPath)) {
-    throw new PolicyError([`${testPath}: policy file not found: ${policyPath}`]);
+    throw testFileError(testPath, [`policy file not found: ${policyPath}`]);
   }
-  return loadPolicy(policyPath);
+  try {
+    return loadPolicy(policyPath);
+  } catch (e) {
+    // Named twice, so the reader knows which file to fix and which file sent them there.
+    if (e instanceof PolicyError) {
+      throw new PolicyError(e.issues, `Invalid policy ${policyPath}, referenced by ${testPath}`);
+    }
+    throw e;
+  }
 }
 
 export function runPolicyTestFile(path: string, policyOverride?: Policy): PolicyTestResult[] {
@@ -137,14 +149,13 @@ export function runPolicyTestFile(path: string, policyOverride?: Policy): Policy
   try {
     raw = parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    throw new PolicyError([
-      `${path}: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`,
-    ]);
+    throw testFileError(path, [e instanceof Error ? e.message.split('\n')[0]! : String(e)]);
   }
   const parsed = fileSchema.safeParse(raw);
   if (!parsed.success) {
-    throw new PolicyError(
-      parsed.error.issues.map((i) => `${path}: ${i.path.join('.') || '(file)'}: ${i.message}`),
+    throw testFileError(
+      path,
+      parsed.error.issues.map((i) => `${i.path.join('.') || '(file)'}: ${i.message}`),
     );
   }
   const file = parsed.data;
@@ -154,8 +165,8 @@ export function runPolicyTestFile(path: string, policyOverride?: Policy): Policy
     for (const [index, step] of c.sequence.entries()) {
       const at = step.at ?? index;
       if (at < previous) {
-        throw new PolicyError([
-          `${path}: case "${c.name}": step ${index}: "at" (${at}) is earlier than the previous step`,
+        throw testFileError(path, [
+          `case "${c.name}": step ${index}: "at" (${at}) is earlier than the previous step`,
         ]);
       }
       previous = at;

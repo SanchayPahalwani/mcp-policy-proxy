@@ -169,9 +169,7 @@ export interface ProxyConfig extends ConfigSpec {
 
 /** A `PolicyError` whose headline says what was being read, instead of "Invalid policy". */
 export function configError(headline: string, issues: string[]): PolicyError {
-  const error = new PolicyError(issues);
-  error.message = `${headline}:\n${issues.join('\n')}`;
-  return error;
+  return new PolicyError(issues, headline);
 }
 
 export function loadConfig(path: string): ProxyConfig {

@@ -35,7 +35,16 @@ export function validate(args: string[], io: CliIo): number {
     throw e;
   }
   let known: { identities: string[]; servers: string[] } | undefined;
-  if (values.config !== undefined) {
+  if (values.config === undefined) {
+    io.stderr.write('note: no --config given, so identity and server names were not checked\n');
+  } else {
+    try {
+      // A config that cannot be read is unusable input, like an unreadable policy; one that
+      // reads but is invalid is a finding.
+      readFileSync(values.config);
+    } catch (e) {
+      throw new InputError(messageOf(e));
+    }
     try {
       const config = loadConfig(values.config);
       known = {

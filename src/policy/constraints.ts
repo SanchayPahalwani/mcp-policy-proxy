@@ -1,5 +1,5 @@
 import { anchoredPattern } from './match.js';
-import type { ConstraintSpec } from './schema.js';
+import { CONSTRAINT_OPERATORS, type ConstraintSpec } from './schema.js';
 
 // JavaScript's regex engine backtracks, so the cap bounds the time an
 // attacker-chosen value can cost.
@@ -97,10 +97,8 @@ function compileCheck(spec: ConstraintSpec): (value: unknown) => ConstraintResul
   throw new Error(`constraint on "${arg}" has no operator`);
 }
 
-const OPERATORS = ['equals', 'in', 'matches', 'max_length', 'min', 'max', 'absent'] as const;
-
 export function compileConstraint(spec: ConstraintSpec): CompiledConstraint {
-  const used = OPERATORS.filter((op) => spec[op] !== undefined);
+  const used = CONSTRAINT_OPERATORS.filter((op) => spec[op] !== undefined);
   if (used.length !== 1) {
     throw new Error(
       `constraint on "${spec.arg}" needs exactly one operator (found ${used.length})`,
