@@ -34,7 +34,9 @@ function sink(): { stream: Writable; text: () => string } {
 }
 
 describe('serve', () => {
-  it('serves the mock servers from a copy of the example config', async () => {
+  // Three `npx tsx` children start one after another, which can take most of the default
+  // ten seconds on a busy machine.
+  it('serves the mock servers from a copy of the example config', { timeout: 30_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mcp-policy-serve-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const example = parse(readFileSync(join(EXAMPLES, 'proxy.config.yaml'), 'utf8'));
