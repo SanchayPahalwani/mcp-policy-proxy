@@ -149,6 +149,12 @@ Three properties of the code follow from the claim:
 
 [`docs/walkthrough.md`](walkthrough.md) follows one call through these files.
 
+**Size.** `src/` is about 3,700 lines of TypeScript. The spec set a target of
+under 2,500, so the code could be read in one sitting; it grew past that
+through the hardening the reviews asked for (section 7 and the spec's section
+16), most of it in startup checks, the strict session reader, the approval wait
+and failing closed on the call path.
+
 ## 5. Decisions
 
 Each subsection: the decision, the alternatives, why, and the cost. In one
@@ -244,6 +250,7 @@ parent is present but is a string, number, array or null, the value is
 `optional` says, and `absent` fails too. An array value passes only if every
 element passes, and an **empty array fails every operator** (`<arg> is empty`).
 Lookups use own properties only, so `constructor` or `__proto__` never resolve.
+A path may not have an empty segment or one containing whitespace.
 
 **Alternatives.** Treat any unresolvable path as missing (the simple reading),
 and let "every element passes" hold vacuously for an empty array.
@@ -256,6 +263,11 @@ satisfied by the value the upstream will receive.
 
 **Cost.** A policy author has to know that `optional` means "absent is fine",
 not "anything unreadable is fine". The reason text says which case applied.
+And an `absent` or `optional` constraint on a misspelled argument name always
+passes, because the misspelled key is always missing. The engine cannot tell a
+typo from an argument nobody sent; policy test files are the guard, as
+[`examples/policy.test.yaml`](../examples/policy.test.yaml) does by sending a
+`cc` and a `bcc` and expecting both to be refused.
 
 ### 5.5 A small closed set of constraint operators
 
@@ -361,7 +373,8 @@ knowing a limit does not let you exceed it.
 **Decision.** A bearer token maps to an identity name. Tokens are configured
 as SHA-256 digests or environment variables. The presented token is hashed and
 compared in constant time against every configured digest, so response time
-does not say which identity (if any) matched. No token or an unknown one gets
+does not say which identity (if any) matched. The `Bearer` scheme is matched in
+any case, as HTTP auth schemes are. No token or an unknown one gets
 `401` with `WWW-Authenticate: Bearer`. On stdio, identity is a launch setting
 (`stdio_identity`). The engine only ever sees the name.
 
@@ -376,9 +389,10 @@ identifier, RFC 8707), map a claim to an identity name, and publish protected
 resource metadata (RFC 9728) so clients can find the authorization server.
 Nothing in the engine or the policy file changes.
 
-**Never forwarded.** The agent's token stops at the proxy; it is not even kept
-in the request's auth info. The proxy uses its own credentials for each
-upstream. Forwarding the client's token is what the MCP guidance calls token
+**Never forwarded.** The agent's token stops at the proxy: once checked, the
+`authorization` header is removed from the request before the SDK handler sees
+it, and the token is not kept in the request's auth info. The proxy uses its
+own credentials for each upstream. Forwarding the client's token is what the MCP guidance calls token
 passthrough: the authorization spec says a server must not pass through the
 token it received from the client, and the security best practices forbid it.
 
@@ -393,13 +407,19 @@ reference; not for production.
 
 **Decision.** The HTTP listener binds only to `127.0.0.1`, `localhost` or `::1`
 unless the config sets `listen.allow_non_loopback: true`; then the proxy logs
-that bearer tokens travel in clear text and that TLS must sit in front. On a
-loopback bind the SDK's Host and Origin checks are on, against DNS rebinding.
+that bearer tokens travel in clear text and that TLS must sit in front. Both
+the config schema and startup itself enforce this, so a config built in code
+cannot skip it, and both read one list of loopback names. On a loopback bind
+the SDK's Host and Origin checks are on, against DNS rebinding.
 Once the config file has parsed, every failure before the proxy listens (a
 variable that is not set, a policy that cannot be read, an upstream that will
 not start, a port in use) is a message the proxy builds itself, with at most an
 error code such as `(ENOENT)`; the underlying error's text is kept only as its
-`cause`. A failed start closes every upstream it opened.
+`cause`. An unset or empty token variable is reported once, by name, and is
+never compared with other tokens. An upstream header value must be visible
+ASCII, spaces or tabs; any other character is reported naming only the
+variable, since a header error from Node or the fetch layer can quote the
+value. A failed start closes every upstream it opened.
 
 **Alternatives.** Bind to whatever the config says; print the underlying error.
 
@@ -493,10 +513,12 @@ call is decided again once approved.
   MCP channel.
 - **The webhook approver** `POST`s the pending call with an HMAC-SHA256
   signature header, does not follow redirects, and never puts the URL in an
-  error.
+  error. Its URL must be `https:` unless it is on a loopback name.
 - **Approvers can be closed.** `close()` refuses every waiting and later
-  request, and the terminal approver releases stdin, so a proxy that is shutting
-  down neither approves anything nor hangs on its terminal.
+  request, with the note `approver closed` so the log does not show a shutdown
+  as a person saying no, and the terminal approver releases stdin (pausing it,
+  not destroying it), so a proxy that is shutting down neither approves
+  anything nor hangs on its terminal.
 
 **Alternatives.** Ask through the MCP client (the protocol has a way for a
 server to request input from the client); wait as long as the human takes;
@@ -522,7 +544,9 @@ accept any truthy answer; a plain "y/n" prompt.
 **Cost.** The v1 webhook is one synchronous request. An approval that takes
 longer than the client's timeout, or a proxy restart mid-wait, is not handled.
 A production version would store pending approvals and take the answer on a
-callback.
+callback. The request is signed but the answer is not: it is trusted on the
+strength of TLS, which is why plain `http:` is allowed only on loopback. A
+production version would sign responses too.
 
 ### 5.15 The audit log is written before the call is forwarded
 
@@ -532,7 +556,9 @@ write is synchronous and loops until the whole line has been written to the
 file, so a short write cannot leave half a line. If the decision
 cannot be written, the call is refused (`audit_failed`). Every line, including
 list and outcome lines, carries `policy_sha256`, the SHA-256 of the policy
-text. The outcome's `error` field is a fixed label: `protocol_error <code>` for
+text, and `run`, a random id drawn when the proxy starts, so lines from
+different runs appended to one file can be told apart. A listing that fails
+closed is still a `list` line, with no tools and `code: "internal_error"`. The outcome's `error` field is a fixed label: `protocol_error <code>` for
 a standard JSON-RPC code from the upstream, `error` for any other upstream
 failure, `internal_error` when the proxy itself failed after clearing the call.
 A decision for a call that needed approval carries `approval_requested_at`
@@ -562,14 +588,15 @@ projects do chain theirs.
 (case-insensitive, at any depth; by default `password`, `token`, `secret`,
 `api_key`, `authorization`) is logged as `"[REDACTED]"`, in the audit log and
 in what an approver is shown. `validate` rejects a policy that puts a
-constraint on a redacted key.
+constraint on a redacted key or on any path under one.
 
 **Alternatives.** Redact by value pattern (looks like a key, looks like a card
 number); log nothing; log everything.
 
 **Why.** Key names are predictable and the rule is easy to state. A constraint
-on a redacted key is an error because the offline checker could not reproduce
-that decision from the log.
+on a redacted key, or under one (`secret.kind`, since the whole value under
+`secret` is replaced), is an error because the offline checker could not
+reproduce that decision from the log.
 
 **Cost.** A secret under an unlisted key is logged in clear. Value-pattern
 detection is content inspection, which this design avoids.
@@ -578,7 +605,13 @@ detection is content inspection, which this design avoids.
 
 **Decision.** `check` reads recorded calls (plain session records or the
 proxy's own audit log) and runs `decide` and `commit` over them in time order,
-with their recorded timestamps and a fresh limit state per file. A recorded
+with their recorded timestamps. Limits are replayed per proxy run, because
+that is how the live proxy counts them: its counters live in memory and start
+empty at each start. Each audit line names its `run`, and each (file, run)
+pair gets a fresh limit state; lines that name no run (plain session records,
+older logs) share one state per file. Without this, a log appended across a
+restart, or two stdio launches (whose session is always `stdio`), showed calls
+the live proxy rightly allowed as over the limit. A recorded
 call the policy would deny, or an approval call with no recorded approval, is a
 violation. Exit `0` clean, `1` violations, `2` input it could not use. The
 reader is strict:
@@ -857,14 +890,17 @@ shared limit state (section 9).
 
 **How do you change a policy safely?** Edit the file; policy tests assert the
 intended decisions; `check` replays recent audit logs under the new policy to
-show what it would have refused; then deploy and restart.
+show what it would have refused, with limits counted per proxy run as the live
+proxy counted them, so a restart in the log does not show up as a false limit
+violation; then deploy and restart.
 
 **How do the limit counters work, and what breaks them?** They are in process
 memory: a list of timestamps per rule and identity for the per-minute window,
 and a count per rule within each identity and session. Only forwarded calls are
 counted, and decide and commit run in the same tick, so two concurrent calls
-cannot share one slot. What breaks them: a restart (they reset), a second
-replica (each allows the full limit), a harness that rotates session names
+cannot share one slot. What breaks them: a restart (they reset; `check` knows,
+because each audit line names its run), a second replica (each allows the full
+limit), a harness that rotates session names
 (per-session only), and a wall clock that jumps forward and back.
 
 **What happens while a call waits for approval?** The agent's request stays

@@ -30,32 +30,34 @@ The rule that will decide it is in the example policy,
 
 ### Stop 1. HTTP entry and authentication (3 min)
 
-Read [src/proxy/http.ts:77-103](../src/proxy/http.ts#L77-L103), the `handle`
-function, then [src/proxy/auth.ts:60-71](../src/proxy/auth.ts#L60-L71).
+Read [src/proxy/http.ts:76-107](../src/proxy/http.ts#L76-L107), the `handle`
+function, then [src/proxy/auth.ts:61-72](../src/proxy/auth.ts#L61-L72).
 
 Notice:
 
-- The order: path check ([line 78](../src/proxy/http.ts#L78)), Host and Origin
-  guards against DNS rebinding ([line 82](../src/proxy/http.ts#L82), set up at
-  [lines 54-56](../src/proxy/http.ts#L54-L56) only for loopback binds), then the
-  token ([line 84](../src/proxy/http.ts#L84)). Nothing reaches the MCP layer
+- The order: path check ([line 77](../src/proxy/http.ts#L77)), Host and Origin
+  guards against DNS rebinding ([line 81](../src/proxy/http.ts#L81), set up at
+  [lines 53-55](../src/proxy/http.ts#L53-L55) only for loopback binds), then the
+  token ([line 83](../src/proxy/http.ts#L83)). Nothing reaches the MCP layer
   without an identity.
 - `authenticate` hashes the presented token and compares it with every
   configured digest in constant time, and keeps looping after a match
-  ([auth.ts:67-69](../src/proxy/auth.ts#L67-L69)).
+  ([auth.ts:68-70](../src/proxy/auth.ts#L68-L70)).
 - The session is the `x-agent-session` header or `default`, and must match
-  `SESSION_ID` ([line 27](../src/proxy/http.ts#L27),
-  [lines 89-93](../src/proxy/http.ts#L89-L93)).
-- What is handed to the SDK ([lines 96-101](../src/proxy/http.ts#L96-L101)) is
-  the identity name and the session. The `token` field is an empty string.
+  `SESSION_ID` ([line 28](../src/proxy/http.ts#L28),
+  [lines 88-92](../src/proxy/http.ts#L88-L92)).
+- Before the SDK sees the request, the `authorization` header is deleted from
+  it ([lines 96-99](../src/proxy/http.ts#L96-L99)). What is handed to the SDK
+  ([lines 100-105](../src/proxy/http.ts#L100-L105)) is the identity name and
+  the session. The `token` field is an empty string.
 
 **Question 1.** Why is `token` set to `''` instead of the bearer token the
 agent sent?
 
 ### Stop 2. A server per request, and splitting the name (3 min)
 
-Read the factory at [src/proxy/http.ts:58-68](../src/proxy/http.ts#L58-L68),
-then [src/proxy/server.ts:19-46](../src/proxy/server.ts#L19-L46), then
+Read the factory at [src/proxy/http.ts:57-67](../src/proxy/http.ts#L57-L67),
+then [src/proxy/server.ts:13-43](../src/proxy/server.ts#L13-L43), then
 `splitName` at [src/policy/names.ts:11-18](../src/policy/names.ts#L11-L18).
 
 Notice:
@@ -63,14 +65,14 @@ Notice:
 - `createMcpHandler` calls the factory once per HTTP request, and
   `buildServer` binds the new server to one caller (identity and session). The
   2026-07-28 protocol revision is stateless, so there is nothing else to keep.
-- The `tools/call` handler ([server.ts:31-43](../src/proxy/server.ts#L31-L43))
+- The `tools/call` handler ([server.ts:28-40](../src/proxy/server.ts#L28-L40))
   splits `mail__send` at the first `__` into server `mail` and tool `send`.
   Server names cannot contain `_`, so the split is unambiguous.
 - A name that cannot be routed is refused with `toolNotFound`
-  ([server.ts:35](../src/proxy/server.ts#L35)) before the gate sees it.
-- `forward` is a closure ([server.ts:40](../src/proxy/server.ts#L40)): the gate
+  ([server.ts:32](../src/proxy/server.ts#L32)) before the gate sees it.
+- `forward` is a closure ([server.ts:37](../src/proxy/server.ts#L37)): the gate
   decides whether to call it, but cannot change where it goes. The request's
-  abort signal travels with it ([server.ts:41](../src/proxy/server.ts#L41)).
+  abort signal travels with it ([server.ts:38](../src/proxy/server.ts#L38)).
 
 **Question 2.** An agent calls `mail_send` (one underscore). What does it get
 back, and is there a line in the audit log?
@@ -78,23 +80,23 @@ back, and is there a line in the audit log?
 ### Stop 3. The gate builds the call (2 min)
 
 Read `callTool` at
-[src/proxy/policy-gate.ts:286-307](../src/proxy/policy-gate.ts#L286-L307), then
+[src/proxy/policy-gate.ts:293-314](../src/proxy/policy-gate.ts#L293-L314), then
 `gatedCall` at
-[src/proxy/policy-gate.ts:225-270](../src/proxy/policy-gate.ts#L225-L270).
+[src/proxy/policy-gate.ts:232-277](../src/proxy/policy-gate.ts#L232-L277).
 
 Notice:
 
 - Every call runs inside one OpenTelemetry span, whose closing fields are read
   only after the call has settled
-  ([lines 297-305](../src/proxy/policy-gate.ts#L297-L305)).
-- The `Call` the engine sees ([line 239](../src/proxy/policy-gate.ts#L239)) is
+  ([lines 304-312](../src/proxy/policy-gate.ts#L304-L312)).
+- The `Call` the engine sees ([line 246](../src/proxy/policy-gate.ts#L246)) is
   identity, session, server, tool, arguments and a time from the gate's clock.
   Nothing else about the request reaches the policy.
-- `decide` runs at [line 240](../src/proxy/policy-gate.ts#L240). This call does
+- `decide` runs at [line 247](../src/proxy/policy-gate.ts#L247). This call does
   not need approval, so it goes straight to `admit`
-  ([line 252](../src/proxy/policy-gate.ts#L252)).
+  ([line 259](../src/proxy/policy-gate.ts#L259)).
 - The whole block is in a `try` whose `catch`
-  ([lines 256-262](../src/proxy/policy-gate.ts#L256-L262)) refuses with
+  ([lines 263-269](../src/proxy/policy-gate.ts#L263-L269)) refuses with
   `internal_error`: an exception can never become an allow.
 
 **Question 3.** Why does the time on the call come from the gate's clock and
@@ -132,11 +134,11 @@ what does that tell you about where "never" belongs in a policy?
 
 ### Stop 5. The constraint (3 min)
 
-Read [src/policy/constraints.ts:121-141](../src/policy/constraints.ts#L121-L141)
+Read [src/policy/constraints.ts:116-136](../src/policy/constraints.ts#L116-L136)
 (the `test` of an ordinary constraint), `lookup` at
-[lines 26-36](../src/policy/constraints.ts#L26-L36), and the `equals` check at
-[lines 61-65](../src/policy/constraints.ts#L61-L65). Glance at `absent`
-([lines 110-120](../src/policy/constraints.ts#L110-L120)), which the `cc` and
+[lines 23-33](../src/policy/constraints.ts#L23-L33), and the `equals` check at
+[lines 58-62](../src/policy/constraints.ts#L58-L62). Glance at `absent`
+([lines 105-115](../src/policy/constraints.ts#L105-L115)), which the `cc` and
 `bcc` constraints use.
 
 Notice:
@@ -145,9 +147,9 @@ Notice:
   on the path is present but is not a plain object). Malformed fails whatever
   `optional` says.
 - Arrays are checked element by element, and an empty array fails
-  ([lines 131-138](../src/policy/constraints.ts#L131-L138)).
+  ([lines 126-133](../src/policy/constraints.ts#L126-L133)).
 - The failure reason is built once, when the policy is compiled
-  ([line 63](../src/policy/constraints.ts#L63)): `to must equal "team@example.test"`.
+  ([line 60](../src/policy/constraints.ts#L60)): `to must equal "team@example.test"`.
 
 **Question 5.** What does the `to` constraint say about `{"to": []}`, about
 `{"to": {"address": "team@example.test"}}`, and about
@@ -157,26 +159,26 @@ constraint?
 ### Stop 6. The decision is recorded (3 min)
 
 Back in the gate, read `admit` at
-[src/proxy/policy-gate.ts:106-146](../src/proxy/policy-gate.ts#L106-L146), then
+[src/proxy/policy-gate.ts:110-150](../src/proxy/policy-gate.ts#L110-L150), then
 `refusal` and `decisionEvent` at
-[src/proxy/audit-events.ts:63-115](../src/proxy/audit-events.ts#L63-L115), then
-the file sink's `write` at [src/audit/log.ts:67-77](../src/audit/log.ts#L67-L77).
+[src/proxy/audit-events.ts:69-121](../src/proxy/audit-events.ts#L69-L121), then
+the file sink's `write` at [src/audit/log.ts:78-88](../src/audit/log.ts#L78-L88).
 
 Notice:
 
-- `refused` ([policy-gate.ts:118-122](../src/proxy/policy-gate.ts#L118-L122))
+- `refused` ([policy-gate.ts:122-126](../src/proxy/policy-gate.ts#L122-L126))
   is the reason this call will not be forwarded; for a deny it is the engine's
   own code and reason.
 - The event is built from the decision with arguments redacted
-  ([audit-events.ts:103](../src/proxy/audit-events.ts#L103)) and the policy's
-  hash on it ([audit-events.ts:113](../src/proxy/audit-events.ts#L113)).
+  ([audit-events.ts:109](../src/proxy/audit-events.ts#L109)) and the policy's
+  hash on it ([audit-events.ts:119](../src/proxy/audit-events.ts#L119)).
 - A refusal is written with `record`
-  ([policy-gate.ts:126](../src/proxy/policy-gate.ts#L126)), which only logs a
+  ([policy-gate.ts:130](../src/proxy/policy-gate.ts#L130)), which only logs a
   failed write. A call about to be forwarded is written with `write`
-  ([policy-gate.ts:131-141](../src/proxy/policy-gate.ts#L131-L141)), and a failed
+  ([policy-gate.ts:135-145](../src/proxy/policy-gate.ts#L135-L145)), and a failed
   write refuses it with `audit_failed`.
 - The sink writes synchronously and loops until the whole line is written
-  ([log.ts:72-76](../src/audit/log.ts#L72-L76)).
+  ([log.ts:83-87](../src/audit/log.ts#L83-L87)).
 
 The decision line for this call, spread over several lines here (in the file it
 is one line). It has no `rule` field, because no single rule decided it:
@@ -205,7 +207,7 @@ answer, when an allow's may not?
 
 ### Stop 7. The agent reads the refusal (2 min)
 
-Read [src/proxy/policy-gate.ts:263-267](../src/proxy/policy-gate.ts#L263-L267)
+Read [src/proxy/policy-gate.ts:270-274](../src/proxy/policy-gate.ts#L270-L274)
 and `deniedResult` at [src/proxy/gate.ts:33-38](../src/proxy/gate.ts#L33-L38).
 
 Notice:
@@ -218,7 +220,7 @@ Notice:
   Denied by policy (constraint_failed): arguments rejected: rule "mail-team-only": to must equal "team@example.test"
   ```
 
-- A hidden tool ([line 266](../src/proxy/policy-gate.ts#L266)) throws
+- A hidden tool ([line 273](../src/proxy/policy-gate.ts#L273)) throws
   `toolNotFound` instead, which the agent sees as the JSON-RPC error `-32602`
   `Tool docs__publish not found`, exactly what a tool that does not exist
   gives.
@@ -239,16 +241,16 @@ is `allow` with `applied: ["mail-team-only"]`
 ([lines 135-143](../src/policy/engine.ts#L135-L143)).
 
 In `admit`, `refused` is undefined, so the event is written with `write`
-([src/proxy/policy-gate.ts:131-141](../src/proxy/policy-gate.ts#L131-L141)) and
+([src/proxy/policy-gate.ts:135-145](../src/proxy/policy-gate.ts#L135-L145)) and
 only then does `commit` record the call
-([line 144](../src/proxy/policy-gate.ts#L144)). Read `record` in
+([line 148](../src/proxy/policy-gate.ts#L148)). Read `record` in
 [src/policy/limits.ts:29-51](../src/policy/limits.ts#L29-L51).
 
 Notice:
 
 - `admit` is synchronous: nothing can run between the limit check in `decide`
   and the count in `commit` (see the comment at
-  [lines 104-105](../src/proxy/policy-gate.ts#L104-L105)).
+  [lines 108-109](../src/proxy/policy-gate.ts#L108-L109)).
 - The per-minute window keeps timestamps per rule and identity; the session
   count is per rule within one identity and session; a session idle for an hour
   is dropped as a whole ([limits.ts:45-50](../src/policy/limits.ts#L45-L50)).
@@ -262,25 +264,25 @@ line is the third one refused, and which counters does that refusal change?
 ### Stop 9. Forward and record the outcome (3 min)
 
 Read `forwardAndRecord` at
-[src/proxy/policy-gate.ts:179-204](../src/proxy/policy-gate.ts#L179-L204), then
+[src/proxy/policy-gate.ts:183-208](../src/proxy/policy-gate.ts#L183-L208), then
 `Upstreams.callTool` at
-[src/proxy/upstreams.ts:136-144](../src/proxy/upstreams.ts#L136-L144),
+[src/proxy/upstreams.ts:134-142](../src/proxy/upstreams.ts#L134-L142),
 `outcomeEvent` at
-[src/proxy/audit-events.ts:117-134](../src/proxy/audit-events.ts#L117-L134) and
+[src/proxy/audit-events.ts:123-142](../src/proxy/audit-events.ts#L123-L142) and
 `errorLabel` at
-[src/proxy/audit-events.ts:141-151](../src/proxy/audit-events.ts#L141-L151).
+[src/proxy/audit-events.ts:149-159](../src/proxy/audit-events.ts#L149-L159).
 
 Notice:
 
 - The upstream is called with the proxy's own client; the agent's token never
   leaves the proxy.
 - `startedAt` is read after the decision is written
-  ([policy-gate.ts:255](../src/proxy/policy-gate.ts#L255)), so `duration_ms`
+  ([policy-gate.ts:262](../src/proxy/policy-gate.ts#L262)), so `duration_ms`
   is the upstream's time alone.
 - The outcome line carries `ok`, `is_error`, the duration and the policy hash.
   If the upstream fails, `error` is a fixed label, never the upstream's text.
 - Back in `callTool`, the span closes with `forwarded: true` and the decision's
-  code and rule ([policy-gate.ts:297-305](../src/proxy/policy-gate.ts#L297-L305)).
+  code and rule ([policy-gate.ts:304-312](../src/proxy/policy-gate.ts#L304-L312)).
   Spans carry names and labels, never argument values.
 
 **Question 9.** Why is the upstream's error message kept out of the audit log,
@@ -294,24 +296,25 @@ The audit file now holds a `list` line, the refused decision, the allowed
 decision and its outcome. Run the checker over it the way the demo's step 8
 does. Read the command at [src/cli/check.ts:7-26](../src/cli/check.ts#L7-L26),
 the reader at
-[src/check/sessions.ts:72-177](../src/check/sessions.ts#L72-L177), and the
-check at [src/check/check.ts:24-60](../src/check/check.ts#L24-L60).
+[src/check/sessions.ts:70-177](../src/check/sessions.ts#L70-L177), and the
+check at [src/check/check.ts:24-63](../src/check/check.ts#L24-L63).
 
 Notice:
 
 - The reader skips only what it knows is not a forwarded call: `outcome` and
   `list` lines and decisions with `forwarded: false`
-  ([sessions.ts:102-111](../src/check/sessions.ts#L102-L111)). Any other shape,
+  ([sessions.ts:100-109](../src/check/sessions.ts#L100-L109)). Any other shape,
   even `"type": "Decision"`, is a format error and exit 2.
 - The time must be ISO 8601 with a zone, on a real date, or epoch milliseconds
-  ([sessions.ts:113-116](../src/check/sessions.ts#L113-L116),
-  [lines 34-70](../src/check/sessions.ts#L34-L70)).
+  ([sessions.ts:111-114](../src/check/sessions.ts#L111-L114),
+  [lines 32-68](../src/check/sessions.ts#L32-L68)).
 - A proxy decision line counts as approved only if its `approval.approved` is
-  `true` ([sessions.ts:154-161](../src/check/sessions.ts#L154-L161)).
-- `checkSessions` runs the same `decide` and `commit` the proxy ran, with a
-  fresh `LimitState` per file and the recorded times
-  ([check.ts:29-37](../src/check/check.ts#L29-L37)). Anything the policy would
-  not have allowed is a violation ([check.ts:49-56](../src/check/check.ts#L49-L56)).
+  `true` ([sessions.ts:153-160](../src/check/sessions.ts#L153-L160)).
+- `checkSessions` runs the same `decide` and `commit` the proxy ran, with the
+  recorded times and a fresh `LimitState` per proxy run: each audit line names
+  the `run` that wrote it, and lines with no run share one state per file
+  ([check.ts:30-40](../src/check/check.ts#L30-L40)). Anything the policy would
+  not have allowed is a violation ([check.ts:52-59](../src/check/check.ts#L52-L59)).
 - The summary line comes from `formatCheck`
   ([src/check/report.ts:18-30](../src/check/report.ts#L18-L30)):
   `no violations in 1 call(s) across 1 file(s)` for this file.
@@ -323,7 +326,8 @@ allowed line's `to` to `someone@outside.test`?
 ## Answers
 
 1. So nothing downstream can log or forward it. Every later stage gets the
-   identity name only; the token stops at the HTTP layer.
+   identity name only, and the header that carried the token has been deleted
+   from the request, so the token stops at the HTTP layer.
 2. The JSON-RPC error `Tool mail_send not found`. There is no audit line,
    because the name is rejected before the gate: a call that cannot be routed
    is never shown to the policy.

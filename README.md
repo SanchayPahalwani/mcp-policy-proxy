@@ -134,13 +134,15 @@ approval: { type: cli, timeout_seconds: 55 }
   (`token_env`) or by SHA-256 digest (`token_sha256`). No token is ever written
   in the file.
 - `upstreams` are stdio commands or Streamable HTTP URLs. The proxy connects to
-  them with its own credentials (`pass_env`, `headers_env`); the agent's token
-  is never forwarded.
+  them with its own credentials (`pass_env`, `headers_env`; header values must
+  be visible ASCII, spaces or tabs); the agent's token is never forwarded.
 - `listen.host` must be a loopback address unless
   `listen.allow_non_loopback: true` is set, and then TLS belongs in front.
 - `approval` is `cli` (a prompt on the proxy's terminal, HTTP only), `webhook`
-  (a signed `POST`) or `deny`, the default. Relative paths are read from the
-  config file's directory.
+  (a signed `POST`) or `deny`, the default. A webhook URL must be `https:`
+  unless it is on `127.0.0.1`, `localhost` or `::1`: its answer is trusted on
+  the strength of TLS alone, since answers are not signed. Relative paths are
+  read from the config file's directory.
 
 ### Starting it
 
@@ -211,8 +213,9 @@ npm run cli -- check --policy examples/policy.yaml examples/sessions/violation.j
 npm run cli -- explain --policy examples/policy.yaml --identity writer --tool docs__publish --args '{"id":"d1"}'
 ```
 
-- `validate` checks the schema and lints the policy (constraints on redacted
-  keys, identities or servers missing from the config).
+- `validate` checks the schema and lints the policy (constraints on or under
+  redacted keys, identities or servers missing from the config). Without
+  `--config` it says on stderr that identity and server names were not checked.
 - `test` runs [policy test files](examples/policy.test.yaml): example calls with
   the decision each must get, visibility expectations and call sequences for
   limits.
@@ -220,7 +223,11 @@ npm run cli -- explain --policy examples/policy.yaml --identity writer --tool do
   `{"ts": "2026-01-15T10:00:30Z", "session": "s1", "identity": "writer", "server": "docs", "tool": "publish", "args": {"id": "d1"}}`,
   or the proxy's own audit log. It replays them through the engine in time
   order and exits `0` when every call was allowed, `1` on violations and `2` on
-  input it cannot read. Over `examples/sessions/violation.jsonl` it prints:
+  input it cannot read. Limits are replayed per proxy run, as the live proxy
+  counts them: every audit line carries the `run` id of the process that wrote
+  it, so a log appended across restarts, or several stdio launches, starts each
+  run's counters empty. Lines without a `run` (plain session records) count as
+  one run per file. Over `examples/sessions/violation.jsonl` it prints:
 
   ```
   examples/sessions/violation.jsonl:2 writer docs.publish denied_by_rule: rule "writers-never-publish" denies docs.publish for "writer": Publishing needs a release manager.
