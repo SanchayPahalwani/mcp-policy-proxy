@@ -109,6 +109,16 @@ describe('readSessionFile', () => {
       { ...decision, forwarded: false, effect: 'deny', args: null, approval: undefined },
       { type: 'outcome', ts: base.ts, call_id: 'c1', ok: true },
       { type: 'list', ts: base.ts, session: 's9', identity: 'writer', tools: [] },
+      // A listing that failed closed: still a list line, so still skipped.
+      {
+        type: 'list',
+        ts: base.ts,
+        run: 'r',
+        session: 's9',
+        identity: 'w',
+        tools: [],
+        code: 'internal_error',
+      },
       { ...decision, forwarded: true, approval: undefined, tool: 'get_draft' },
     ]);
     const records = readSessionFile(path);
@@ -121,7 +131,7 @@ describe('readSessionFile', () => {
       args: { id: 'd1' },
       approved: true,
     });
-    expect(records[1]).toMatchObject({ line: 5, tool: 'get_draft', approved: false });
+    expect(records[1]).toMatchObject({ line: 6, tool: 'get_draft', approved: false });
   });
 
   it('carries the run a decision names, and leaves it out when there is none', () => {
