@@ -1,4 +1,5 @@
 import { anchoredPattern } from './match.js';
+import { isPlainObject } from '../util.js';
 import { CONSTRAINT_OPERATORS, type ConstraintSpec } from './schema.js';
 
 // JavaScript's regex engine backtracks, so the cap bounds the time an
@@ -13,10 +14,6 @@ export interface CompiledConstraint {
 }
 
 const PASS: ConstraintResult = { pass: true };
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 type Lookup = { kind: 'found'; value: unknown } | { kind: 'missing' } | { kind: 'malformed' };
 

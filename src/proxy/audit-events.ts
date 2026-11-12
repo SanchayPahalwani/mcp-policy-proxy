@@ -27,6 +27,12 @@ export interface ApprovalStep {
 
 const INTERNAL_ERROR: Refusal = { code: 'internal_error', reason: 'policy evaluation failed' };
 
+/** The approver's answer, when there was one: a timeout or a failed approver gave none. */
+function answerOf(approval: ApprovalStep | undefined) {
+  const outcome = approval?.outcome;
+  return outcome?.kind === 'approved' || outcome?.kind === 'refused' ? outcome : undefined;
+}
+
 function approvalRefusal(outcome: ApprovalOutcome | undefined): Refusal | undefined {
   switch (outcome?.kind) {
     case 'approved':
@@ -87,9 +93,7 @@ export function decisionEvent(
   approval?: ApprovalStep,
 ): DecisionEvent {
   const forwarded = refused === undefined;
-  // A timeout or a failed approver gave no answer, so there is nothing to record for it.
-  const outcome = approval?.outcome;
-  const answer = outcome?.kind === 'approved' || outcome?.kind === 'refused' ? outcome : undefined;
+  const answer = answerOf(approval);
   const approved = forwarded && answer?.kind === 'approved';
   const by = answer?.result.approver;
   const approvedReason = `${decision.reason}: approved${by ? ` by ${by}` : ''}`;
@@ -164,8 +168,7 @@ export function internalErrorEvent(
   now: number,
   approval?: ApprovalStep,
 ): DecisionEvent {
-  const outcome = approval?.outcome;
-  const answer = outcome?.kind === 'approved' || outcome?.kind === 'refused' ? outcome : undefined;
+  const answer = answerOf(approval);
   return {
     type: 'decision',
     ts: iso(now),

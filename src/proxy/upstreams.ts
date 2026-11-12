@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -7,9 +6,8 @@ import {
   type Transport,
 } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { VERSION } from '../util.js';
 import { SERVER_NAME } from './names.js';
-
-const { version } = createRequire(import.meta.url)('../../package.json') as { version: string };
 
 export type UpstreamSpec =
   | {
@@ -58,7 +56,7 @@ async function openTransport(spec: UpstreamSpec): Promise<Transport> {
 
 async function connectOne(spec: UpstreamSpec): Promise<Client> {
   const client = new Client(
-    { name: 'mcp-policy-proxy', version },
+    { name: 'mcp-policy-proxy', version: VERSION },
     { versionNegotiation: { mode: 'auto' } },
   );
   await client.connect(await openTransport(spec));

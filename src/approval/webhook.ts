@@ -1,14 +1,11 @@
 import { createHmac } from 'node:crypto';
-import type { ApprovalResult, Approver } from './types.js';
+import type { Approver } from './types.js';
+import { normaliseAnswer } from './wait.js';
 
 export const SIGNATURE_HEADER = 'x-mcp-policy-signature';
 
 export function sign(secret: string, body: string): string {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function webhookApprover(opts: {
@@ -50,12 +47,9 @@ export function webhookApprover(opts: {
             : 'approval webhook failed: invalid response',
         );
       }
-      if (!isRecord(answer) || typeof answer.approved !== 'boolean') {
-        throw new Error('approval webhook failed: invalid response');
-      }
-      const result: ApprovalResult = { approved: answer.approved };
-      if (typeof answer.approver === 'string') result.approver = answer.approver;
-      if (typeof answer.note === 'string') result.note = answer.note;
+      // The same reading every approver's answer gets, so the webhook cannot differ from it.
+      const result = normaliseAnswer(answer);
+      if (!result) throw new Error('approval webhook failed: invalid response');
       return result;
     },
   };

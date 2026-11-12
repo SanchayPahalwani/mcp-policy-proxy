@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { splitName } from '../policy/names.js';
+import { isPlainObject } from '../util.js';
 
 export interface SessionRecord {
   file: string;
@@ -27,11 +28,6 @@ export class SessionFormatError extends Error {
     this.line = line;
   }
 }
-
-type Fields = Record<string, unknown>;
-
-const isObject = (value: unknown): value is Fields =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 // An explicit zone is required: a bare "1" or "Jan 5" parses to some date and would put
 // the call at a time nobody recorded.
@@ -91,7 +87,7 @@ export function readSessionFile(
     } catch {
       return fail('line is not valid JSON');
     }
-    if (!isObject(fields)) return fail('line must be a JSON object');
+    if (!isPlainObject(fields)) return fail('line must be a JSON object');
 
     const text_ = (key: string): string | undefined => {
       const value = fields[key];
@@ -152,12 +148,12 @@ export function readSessionFile(
     }
 
     const args = fields['args'] === undefined && !typed ? {} : fields['args'];
-    if (!isObject(args)) return fail('"args" must be a JSON object');
+    if (!isPlainObject(args)) return fail('"args" must be a JSON object');
 
     let approved = false;
     if (typed) {
       const approval = fields['approval'];
-      approved = isObject(approval) && approval['approved'] === true;
+      approved = isPlainObject(approval) && approval['approved'] === true;
     } else if (fields['approved'] !== undefined) {
       if (typeof fields['approved'] !== 'boolean') return fail('"approved" must be true or false');
       approved = fields['approved'];

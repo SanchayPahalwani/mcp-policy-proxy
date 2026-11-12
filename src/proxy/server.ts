@@ -1,10 +1,8 @@
-import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/server';
+import { isPlainObject, VERSION } from '../util.js';
 import { toolNotFound, type Caller, type Gate } from './gate.js';
 import { joinName, splitName } from './names.js';
 import type { Upstreams } from './upstreams.js';
-
-const { version } = createRequire(import.meta.url)('../../package.json') as { version: string };
 
 export interface ProxyOptions {
   upstreams: Upstreams;
@@ -12,13 +10,12 @@ export interface ProxyOptions {
   onError?: (error: Error) => void;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 export function buildServer(opts: ProxyOptions, caller: Caller): Server {
   const { upstreams, gate } = opts;
-  const server = new Server({ name: 'mcp-policy-proxy', version }, { capabilities: { tools: {} } });
+  const server = new Server(
+    { name: 'mcp-policy-proxy', version: VERSION },
+    { capabilities: { tools: {} } },
+  );
   if (opts.onError) server.onerror = opts.onError;
 
   server.setRequestHandler('tools/list', async () => {
