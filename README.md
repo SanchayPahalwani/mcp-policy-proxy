@@ -353,7 +353,8 @@ limiter, versioned policy distribution with hot reload, a latency budget, a
 tamper-evident audit log, approvals that survive a restart, OAuth through the
 existing authenticator interface, and pinning of tool descriptions.
 [`docs/design.md`](docs/design.md) gives the reasoning behind every design call,
-these limits included, and likely interview questions about them.
+these limits included, and the questions a reviewer is likely to ask about
+them.
 
 ## Development
 
@@ -380,9 +381,7 @@ Recording a live model needs a key and is billed to it; see
   policy tests and sessions.
 
 To read the code, start with [`docs/walkthrough.md`](docs/walkthrough.md), a
-30-minute guided read of one call through it. The build's spec and its record
-of every change made after review are in
-[`docs/superpowers/specs/`](docs/superpowers/specs/2026-11-12-mcp-policy-proxy-design.md).
+30-minute guided read of one call through it.
 
 ## License
 

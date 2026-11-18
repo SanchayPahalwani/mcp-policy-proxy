@@ -2,10 +2,7 @@
 
 This document explains the design choices in the proxy: what was decided, what
 the alternatives were, why this one, and what it costs. It is written to be
-argued with. Where it says what the code does, the code is the authority; the
-[spec](superpowers/specs/2026-11-12-mcp-policy-proxy-design.md) records how
-each choice was reached, and its section 16 lists every change made after a
-review.
+argued with. Where it says what the code does, the code is the authority.
 
 ## 1. The problem and the claim
 
@@ -784,7 +781,7 @@ written.
 The build ran as a sequence of tasks under the owner's direction. Each task
 was implemented by one AI coding agent and reviewed by a separate AI review
 agent, which read the diff and probed the code with its own inputs. Each change
-listed in the spec's section 16 was made after a reviewer reproduced the
+that followed a review was made after the reviewer reproduced the
 problem, and several of them changed the design rather than just the code. Five
 that shaped this document:
 
@@ -855,7 +852,7 @@ use first-match.
   claims to do.
 - **Egress control**, so the proxy really is the only route to the servers.
 
-## 10. Questions an interviewer might ask
+## 10. Questions a reviewer might ask
 
 **Why not just remove the tool from the agent's tool list?** That is the
 allowlist-in-the-harness approach. It works for one harness and one identity.

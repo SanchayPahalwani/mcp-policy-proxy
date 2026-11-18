@@ -1,7 +1,6 @@
 # Injection eval results
 
-This page reports the injection eval from section 11 of the
-[design](superpowers/specs/2026-11-12-mcp-policy-proxy-design.md). The tables
+This page reports the injection eval. The tables
 between the markers below are written by a script; the text around them is
 written by hand. The eval tables are **synthetic** unless a table is headed
 `(live)`: their numbers come from a scripted stand-in, not from a language
@@ -72,7 +71,7 @@ change that produced it. CI does not compare this block.
 <!-- prettier-ignore-start -->
 <!-- provenance:begin -->
 - Command: `npm run eval:report` (`tsx eval/cli.ts report`)
-- Commit: `51ddf0c-dirty`
+- Commit: `4ffdbe9-dirty`
 - Date: 2026-11-12
 <!-- provenance:end -->
 <!-- prettier-ignore-end -->
