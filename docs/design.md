@@ -146,10 +146,10 @@ Three properties of the code follow from the claim:
 
 [`docs/walkthrough.md`](walkthrough.md) follows one call through these files.
 
-**Size.** `src/` is about 3,700 lines of TypeScript. The spec set a target of
+**Size.** `src/` is about 3,700 lines of TypeScript. The original target was
 under 2,500, so the code could be read in one sitting; it grew past that
-through the hardening the reviews asked for (section 7 and the spec's section
-16), most of it in startup checks, the strict session reader, the approval wait
+through the hardening the reviews asked for (section 7), most of it in startup
+checks, the strict session reader, the approval wait
 and failing closed on the call path.
 
 ## 5. Decisions
